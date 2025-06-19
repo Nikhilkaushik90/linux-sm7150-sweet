@@ -1215,6 +1215,12 @@ skip_float_voltage:
 	if (rc < 0)
 		return dev_err_probe(chip->dev, rc, "Couldn't set wake irq\n");
 
+	rc = regmap_write_bits(chip->regmap, chip->base + AICL_RERUN_TIME_CFG,
+			       AICL_RERUN_TIME_MASK, AIC_RERUN_TIME_3_SECS);
+	if (rc < 0)
+		return dev_err_probe(chip->dev, rc,
+				     "Couldn't write fast AICL rerun time");
+
 	devm_remove_action(chip->dev, smb_restore_charge_enable, chip);
 
 	platform_set_drvdata(pdev, chip);
