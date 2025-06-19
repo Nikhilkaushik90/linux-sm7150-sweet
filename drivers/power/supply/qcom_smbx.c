@@ -23,16 +23,30 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
+enum smb_generation {
+	SMB2,
+	SMB5,
+};
+
+#define SMB_REG_OFFSET(smb) (smb->gen == SMB2 ? 0x600 : 0x100)
+
 /* clang-format off */
 #define BATTERY_CHARGER_STATUS_1			0x06
 #define BATTERY_CHARGER_STATUS_MASK			GENMASK(2, 0)
 
 #define BATTERY_CHARGER_STATUS_2			0x07
-#define CHARGER_ERROR_STATUS_BAT_OV_BIT			BIT(5)
-#define BAT_TEMP_STATUS_HOT_SOFT_LIMIT_BIT		BIT(3)
-#define BAT_TEMP_STATUS_COLD_SOFT_LIMIT_BIT		BIT(2)
-#define BAT_TEMP_STATUS_TOO_HOT_BIT			BIT(1)
-#define BAT_TEMP_STATUS_TOO_COLD_BIT			BIT(0)
+#define SMB2_CHARGER_ERROR_STATUS_BAT_OV_BIT		BIT(5)
+#define SMB2_BAT_TEMP_STATUS_HOT_SOFT_LIMIT_BIT	BIT(3)
+#define SMB2_BAT_TEMP_STATUS_COLD_SOFT_LIMIT_BIT	BIT(2)
+#define SMB2_BAT_TEMP_STATUS_TOO_HOT_BIT		BIT(1)
+#define SMB5_CHARGER_ERROR_STATUS_BAT_OV_BIT		BIT(1)
+#define SMB2_BAT_TEMP_STATUS_TOO_COLD_BIT		BIT(0)
+
+#define BATTERY_CHARGER_STATUS_7			0x0D
+#define SMB5_BAT_TEMP_STATUS_HOT_SOFT_BIT		BIT(5)
+#define SMB5_BAT_TEMP_STATUS_COLD_SOFT_BIT		BIT(4)
+#define SMB5_BAT_TEMP_STATUS_TOO_HOT_BIT		BIT(3)
+#define SMB5_BAT_TEMP_STATUS_TOO_COLD_BIT		BIT(2)
 
 #define CHARGING_ENABLE_CMD				0x42
 #define CHARGING_ENABLE_CMD_BIT				BIT(0)
@@ -56,9 +70,12 @@
 #define FLOAT_VOLTAGE_CFG				0x70
 #define FLOAT_VOLTAGE_SETTING_MASK			GENMASK(7, 0)
 
-#define FG_UPDATE_CFG_2_SEL				0x7D
-#define SOC_LT_CHG_RECHARGE_THRESH_SEL_BIT		BIT(2)
-#define VBT_LT_CHG_RECHARGE_THRESH_SEL_BIT		BIT(1)
+#define SMB2_FG_UPDATE_CFG_2_SEL			0x7D
+#define SMB2_SOC_LT_CHG_RECHARGE_THRESH_SEL_BIT		BIT(2)
+#define SMB2_VBT_LT_CHG_RECHARGE_THRESH_SEL_BIT		BIT(1)
+
+#define SMB5_CHARGE_RCHG_SOC_THRESHOLD_CFG_REG		0x7D
+#define SMB5_CHARGE_RCHG_SOC_THRESHOLD_CFG_MASK		GENMASK(7, 0)
 
 #define OTG_CFG						0x153
 #define OTG_EN_SRC_CFG_BIT				BIT(1)
@@ -80,12 +97,20 @@
 #define CMD_APSD					0x341
 #define APSD_RERUN_BIT					BIT(0)
 
+#define CMD_ICL_OVERRIDE				0x342
+#define ICL_OVERRIDE_BIT				BIT(0)
+
 #define TYPE_C_CFG					0x358
+#define APSD_START_ON_CC_BIT				BIT(7)
 #define FACTORY_MODE_DETECTION_EN_BIT			BIT(5)
 #define VCONN_OC_CFG_BIT				BIT(1)
 
 #define USBIN_OPTIONS_1_CFG				0x362
+#define AUTO_SRC_DETECT_BIT				BIT(3)
 #define HVDCP_EN_BIT					BIT(2)
+
+#define USBIN_LOAD_CFG					0x65
+#define ICL_OVERRIDE_AFTER_APSD_BIT			BIT(4)
 
 #define USBIN_ICL_OPTIONS				0x366
 #define USB51_MODE_BIT					BIT(1)
@@ -93,18 +118,17 @@
 
 /* PMI8998 only */
 #define TYPE_C_INTRPT_ENB_SOFTWARE_CTRL			0x368
-#define VCONN_EN_SRC_BIT				BIT(4)
+#define SMB2_VCONN_EN_SRC_BIT				BIT(4)
 #define VCONN_EN_VALUE_BIT				BIT(3)
 #define TYPEC_POWER_ROLE_CMD_MASK			GENMASK(2, 0)
-#define UFP_EN_CMD_BIT					BIT(2)
-#define DFP_EN_CMD_BIT					BIT(1)
-#define TYPEC_DISABLE_CMD_BIT				BIT(0)
+#define SMB5_EN_SNK_ONLY_BIT				BIT(1)
 
 #define USBIN_CURRENT_LIMIT_CFG				0x370
 
 #define USBIN_AICL_OPTIONS_CFG				0x380
 #define SUSPEND_ON_COLLAPSE_USBIN_BIT			BIT(7)
 #define USBIN_AICL_START_AT_MAX_BIT			BIT(5)
+#define USBIN_AICL_PERIODIC_RERUN_EN_BIT		BIT(4)
 #define USBIN_AICL_ADC_EN_BIT				BIT(3)
 #define USBIN_AICL_EN_BIT				BIT(2)
 #define USBIN_HV_COLLAPSE_RESPONSE_BIT			BIT(1)
@@ -117,12 +141,44 @@
 #define USBIN_CONT_AICL_THRESHOLD_CFG			0x384
 #define USBIN_CONT_AICL_THRESHOLD_CFG_MASK		GENMASK(5, 0)
 
-#define ICL_STATUS					0x607
+#define ICL_STATUS(smb)					(SMB_REG_OFFSET(smb) + 0x07)
 #define INPUT_CURRENT_LIMIT_MASK			GENMASK(7, 0)
 
-#define POWER_PATH_STATUS				0x60B
+#define POWER_PATH_STATUS(smb)				(SMB_REG_OFFSET(smb) + 0x0B)
 #define P_PATH_USE_USBIN_BIT				BIT(4)
 #define P_PATH_VALID_INPUT_POWER_SOURCE_STS_BIT		BIT(0)
+
+/* 0x5xx region is PM8150b only Type-C registers */
+#define SMB5_TYPE_C_SRC_STATUS_REG			0x508
+#define SMB5_DETECTED_SNK_TYPE_MASK			GENMASK(4, 0)
+#define SMB5_SRC_DEBUG_ACCESS_BIT			BIT(4)
+#define SMB5_SRC_RD_OPEN_BIT				BIT(3)
+#define SMB5_SRC_RD_RA_VCONN_BIT			BIT(2)
+#define SMB5_AUDIO_ACCESS_RA_RA_BIT			BIT(0)
+
+/* Bits 2:0 match PMI8998 TYPE_C_INTRPT_ENB_SOFTWARE_CTRL */
+#define SMB5_TYPE_C_MODE_CFG				0x544
+#define SMB5_EN_TRY_SNK_BIT				BIT(4)
+#define SMB5_EN_SNK_ONLY_BIT				BIT(1)
+
+#define SMB5_TYPEC_TYPE_C_VCONN_CONTROL			0x546
+#define SMB5_VCONN_EN_ORIENTATION_BIT			BIT(2)
+#define SMB5_VCONN_EN_VALUE_BIT				BIT(1)
+#define SMB5_VCONN_EN_SRC_BIT				BIT(0)
+
+
+#define SMB5_TYPE_C_DEBUG_ACCESS_SINK			0x54a
+#define SMB5_TYPEC_DEBUG_ACCESS_SINK_MASK		GENMASK(4, 0)
+
+#define SMB5_DEBUG_ACCESS_SRC_CFG			0x54C
+#define SMB5_EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT	BIT(0)
+
+#define SMB5_TYPE_C_EXIT_STATE_CFG			0x550
+#define SMB5_BYPASS_VSAFE0V_DURING_ROLE_SWAP_BIT	BIT(3)
+#define SMB5_SEL_SRC_UPPER_REF_BIT			BIT(2)
+#define SMB5_EXIT_SNK_BASED_ON_CC_BIT			BIT(0)
+
+/* Common */
 
 #define BARK_BITE_WDOG_PET				0x643
 #define BARK_BITE_WDOG_PET_BIT				BIT(0)
@@ -147,8 +203,6 @@
 #define DCP_CURRENT_UA					1500000
 #define CURRENT_MAX_UA					DCP_CURRENT_UA
 
-/* pmi8998 registers represent current in increments of 1/40th of an amp */
-#define CURRENT_SCALE_FACTOR				25000
 #define SMB2_FLOAT_VOLTAGE_MIN_UV			3487500
 #define SMB2_FLOAT_VOLTAGE_MAX_UV			4920000
 #define SMB2_FLOAT_VOLTAGE_STEP_UV			7500
@@ -179,6 +233,9 @@ struct smb_init_register {
  * @regmap:		Register map
  * @batt_info:		Battery data from DT
  * @initial_charge_enable: Charging enable state before hardware setup
+ * @gen:		Generation of SMBx hardware block
+ * @current_step_size_ua: Step size of current limits in uA
+ * @current_limit_max_ua: Maximum charging current in uA
  * @status_change_work: Worker to handle plug/unplug events
  * @cable_irq:		USB plugin IRQ
  * @wakeup_enabled:	If the cable IRQ will cause a wakeup
@@ -193,6 +250,9 @@ struct smb_chip {
 	struct regmap *regmap;
 	struct power_supply_battery_info *batt_info;
 	u8 initial_charge_enable;
+	enum smb_generation gen;
+	unsigned int current_step_size_ua;
+	unsigned int current_limit_max_ua;
 
 	struct delayed_work status_change_work;
 	int cable_irq;
@@ -202,6 +262,15 @@ struct smb_chip {
 	struct iio_channel *usb_in_v_chan;
 
 	struct power_supply *chg_psy;
+};
+
+struct smb_match_data {
+	const char *name;
+	enum smb_generation gen;
+	size_t init_seq_len;
+	const struct smb_init_register *init_seq;
+	unsigned int current_step_size_ua;
+	unsigned int current_limit_max_ua;
 };
 
 static enum power_supply_property smb_properties[] = {
@@ -216,12 +285,22 @@ static enum power_supply_property smb_properties[] = {
 	POWER_SUPPLY_PROP_USB_TYPE,
 };
 
+static bool smb_is_charging(struct smb_chip *chip)
+{
+	int rc;
+	union power_supply_propval status;
+
+	rc = power_supply_get_property(chip->chg_psy, POWER_SUPPLY_PROP_STATUS,
+				       &status);
+	return !(rc < 0 || status.intval != POWER_SUPPLY_STATUS_CHARGING);
+}
+
 static int smb_get_prop_usb_online(struct smb_chip *chip, int *val)
 {
 	unsigned int stat;
 	int rc;
 
-	rc = regmap_read(chip->regmap, chip->base + POWER_PATH_STATUS, &stat);
+	rc = regmap_read(chip->regmap, chip->base + POWER_PATH_STATUS(chip), &stat);
 	if (rc < 0) {
 		dev_err(chip->dev, "Couldn't read power path status: %d\n", rc);
 		return rc;
@@ -276,9 +355,33 @@ static int smb_apsd_get_charger_type(struct smb_chip *chip, int *val)
 	return 0;
 }
 
+/*
+ * Return 1 when in overvoltage state, else 0 or -errno.
+ *
+ * Both generations report the battery overvoltage fault in
+ * BATTERY_CHARGER_STATUS_2, only the bit position differs.
+ */
+static int smbx_ov_status(struct smb_chip *chip)
+{
+	unsigned int val, mask;
+	int rc;
+
+	if (chip->gen == SMB5)
+		mask = SMB5_CHARGER_ERROR_STATUS_BAT_OV_BIT;
+	else
+		mask = SMB2_CHARGER_ERROR_STATUS_BAT_OV_BIT;
+
+	rc = regmap_read(chip->regmap, chip->base + BATTERY_CHARGER_STATUS_2,
+			 &val);
+	if (rc < 0)
+		return rc;
+
+	return !!(val & mask);
+}
+
 static int smb_get_prop_status(struct smb_chip *chip, int *val)
 {
-	unsigned char stat[2];
+	unsigned int stat;
 	int usb_online = 0;
 	int rc;
 
@@ -288,22 +391,27 @@ static int smb_get_prop_status(struct smb_chip *chip, int *val)
 		return rc;
 	}
 
-	rc = regmap_bulk_read(chip->regmap,
-			      chip->base + BATTERY_CHARGER_STATUS_1, &stat, 2);
+	rc = regmap_read(chip->regmap,
+			 chip->base + BATTERY_CHARGER_STATUS_1, &stat);
 	if (rc < 0) {
 		dev_err(chip->dev, "Failed to read charging status ret=%d\n",
 			rc);
 		return rc;
 	}
 
-	if (stat[1] & CHARGER_ERROR_STATUS_BAT_OV_BIT) {
+	rc = smbx_ov_status(chip);
+	if (rc < 0)
+		return rc;
+
+	/* In overvoltage state */
+	if (rc == 1) {
 		*val = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		return 0;
 	}
 
-	stat[0] = stat[0] & BATTERY_CHARGER_STATUS_MASK;
+	stat = stat & BATTERY_CHARGER_STATUS_MASK;
 
-	switch (stat[0]) {
+	switch (stat) {
 	case TRICKLE_CHARGE:
 	case PRE_CHARGE:
 	case FAST_CHARGE:
@@ -327,10 +435,62 @@ static int smb_get_prop_status(struct smb_chip *chip, int *val)
 static inline int smb_get_current_limit(struct smb_chip *chip,
 					 unsigned int *val)
 {
-	int rc = regmap_read(chip->regmap, chip->base + ICL_STATUS, val);
+	int rc = regmap_read(chip->regmap, chip->base + ICL_STATUS(chip), val);
 
 	if (rc >= 0)
-		*val *= CURRENT_SCALE_FACTOR;
+		*val *= chip->current_step_size_ua;
+	return rc;
+}
+
+static inline int smb_get_current_now(struct smb_chip *chip,
+				      unsigned int *val)
+{
+	unsigned int stat;
+	bool sink_connected;
+	int rc = iio_read_channel_processed(chip->usb_in_i_chan, val);
+	if (rc < 0 || chip->gen == SMB2)
+		return rc;
+
+	rc = regmap_read(chip->regmap, chip->base + SMB5_TYPE_C_SRC_STATUS_REG, &stat);
+	if (rc < 0) {
+		dev_err(chip->dev, "Couldn't read type-C status rc=%d\n", rc);
+		return rc;
+	}
+
+	switch (stat & SMB5_DETECTED_SNK_TYPE_MASK) {
+	case SMB5_AUDIO_ACCESS_RA_RA_BIT:
+	case SMB5_SRC_DEBUG_ACCESS_BIT:
+	case SMB5_SRC_RD_RA_VCONN_BIT:
+	case SMB5_SRC_RD_OPEN_BIT:
+		sink_connected = true;
+		break;
+	default:
+		sink_connected = false;
+		break;
+	}
+
+	/*
+	 * For PM8150B, scaling factor = reciprocal of
+	 * 0.2V/A in Buck mode, 0.4V/A in Boost mode.
+	 * For PMI632, scaling factor = reciprocal of
+	 * 0.4V/A in Buck mode, 0.8V/A in Boost mode.
+	 */
+	// TODO: Make member in match data
+	int buck_scale = 20;
+	int boost_scale = 40;
+
+	if (sink_connected) {
+		*val = DIV_ROUND_CLOSEST(*val * 100, boost_scale);
+		return rc;
+	}
+
+	if (!smb_is_charging(chip)) {
+		*val = 0;
+		return rc;
+	}
+
+	*val = DIV_ROUND_CLOSEST(*val * 100, buck_scale);
+
 	return rc;
 }
 
@@ -338,12 +498,12 @@ static int smb_set_current_limit(struct smb_chip *chip, unsigned int val)
 {
 	unsigned char val_raw;
 
-	if (val > 4800000) {
+	if (val > chip->current_limit_max_ua) {
 		dev_err(chip->dev,
-			"Can't set current limit higher than 4800000uA");
+			"Can't set current limit higher than %u uA\n", chip->current_limit_max_ua);
 		return -EINVAL;
 	}
-	val_raw = val / CURRENT_SCALE_FACTOR;
+	val_raw = val / chip->current_step_size_ua;
 
 	return regmap_write(chip->regmap, chip->base + USBIN_CURRENT_LIMIT_CFG,
 			    val_raw);
@@ -404,12 +564,7 @@ static void smb_status_change_work(struct work_struct *work)
 static int smb_get_iio_chan(struct smb_chip *chip, struct iio_channel *chan,
 			     int *val)
 {
-	int rc;
-	union power_supply_propval status;
-
-	rc = power_supply_get_property(chip->chg_psy, POWER_SUPPLY_PROP_STATUS,
-				       &status);
-	if (rc < 0 || status.intval != POWER_SUPPLY_STATUS_CHARGING) {
+	if (!smb_is_charging(chip)) {
 		*val = 0;
 		return 0;
 	}
@@ -422,7 +577,44 @@ static int smb_get_iio_chan(struct smb_chip *chip, struct iio_channel *chan,
 	return iio_read_channel_processed(chan, val);
 }
 
-static int smb_get_prop_health(struct smb_chip *chip, int *val)
+static int smb5_get_prop_health(struct smb_chip *chip, int *val)
+{
+	int rc;
+	unsigned int stat;
+
+	rc = smbx_ov_status(chip);
+
+	/* Treat any error as if we are in the overvoltage state */
+	if (rc < 0)
+		dev_err(chip->dev, "Couldn't determine overvoltage status!");
+	if (rc) {
+		dev_err(chip->dev, "battery over-voltage");
+		*val = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
+		return 0;
+	}
+
+	rc = regmap_read(chip->regmap, chip->base + BATTERY_CHARGER_STATUS_7,
+			 &stat);
+	if (rc < 0) {
+		dev_err(chip->dev, "Couldn't read charger status 7 rc=%d\n", rc);
+		return rc;
+	}
+
+	if (stat & SMB5_BAT_TEMP_STATUS_TOO_COLD_BIT)
+		*val = POWER_SUPPLY_HEALTH_COLD;
+	else if (stat & SMB5_BAT_TEMP_STATUS_TOO_HOT_BIT)
+		*val = POWER_SUPPLY_HEALTH_OVERHEAT;
+	else if (stat & SMB5_BAT_TEMP_STATUS_COLD_SOFT_BIT)
+		*val = POWER_SUPPLY_HEALTH_COOL;
+	else if (stat & SMB5_BAT_TEMP_STATUS_HOT_SOFT_BIT)
+		*val = POWER_SUPPLY_HEALTH_WARM;
+	else
+		*val = POWER_SUPPLY_HEALTH_GOOD;
+
+	return 0;
+}
+
+static int smb2_get_prop_health(struct smb_chip *chip, int *val)
 {
 	int rc;
 	unsigned int stat;
@@ -434,15 +626,15 @@ static int smb_get_prop_health(struct smb_chip *chip, int *val)
 		return rc;
 	}
 
-	if (stat & CHARGER_ERROR_STATUS_BAT_OV_BIT)
+	if (stat & SMB2_CHARGER_ERROR_STATUS_BAT_OV_BIT)
 		*val = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
-	else if (stat & BAT_TEMP_STATUS_TOO_COLD_BIT)
+	else if (stat & SMB2_BAT_TEMP_STATUS_TOO_COLD_BIT)
 		*val = POWER_SUPPLY_HEALTH_COLD;
-	else if (stat & BAT_TEMP_STATUS_TOO_HOT_BIT)
+	else if (stat & SMB2_BAT_TEMP_STATUS_TOO_HOT_BIT)
 		*val = POWER_SUPPLY_HEALTH_OVERHEAT;
-	else if (stat & BAT_TEMP_STATUS_COLD_SOFT_LIMIT_BIT)
+	else if (stat & SMB2_BAT_TEMP_STATUS_COLD_SOFT_LIMIT_BIT)
 		*val = POWER_SUPPLY_HEALTH_COOL;
-	else if (stat & BAT_TEMP_STATUS_HOT_SOFT_LIMIT_BIT)
+	else if (stat & SMB2_BAT_TEMP_STATUS_HOT_SOFT_LIMIT_BIT)
 		*val = POWER_SUPPLY_HEALTH_WARM;
 	else
 		*val = POWER_SUPPLY_HEALTH_GOOD;
@@ -450,11 +642,24 @@ static int smb_get_prop_health(struct smb_chip *chip, int *val)
 	return 0;
 }
 
+static int smb_get_prop_health(struct smb_chip *chip, int *val)
+{
+	switch (chip->gen) {
+	case SMB2:
+		return smb2_get_prop_health(chip, val);
+	case SMB5:
+		return smb5_get_prop_health(chip, val);
+	}
+
+	return -EINVAL;
+}
+
 static int smb_get_property(struct power_supply *psy,
 			     enum power_supply_property psp,
 			     union power_supply_propval *val)
 {
 	struct smb_chip *chip = power_supply_get_drvdata(psy);
+	int ret;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_MANUFACTURER:
@@ -466,11 +671,15 @@ static int smb_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CURRENT_MAX:
 		return smb_get_current_limit(chip, &val->intval);
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
-		return smb_get_iio_chan(chip, chip->usb_in_i_chan,
-					 &val->intval);
+		return smb_get_current_now(chip, &val->intval);
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
-		return smb_get_iio_chan(chip, chip->usb_in_v_chan,
+		ret = smb_get_iio_chan(chip, chip->usb_in_v_chan,
 					 &val->intval);
+		if (!ret) {
+			if (chip->gen == SMB5)
+				val->intval *= 16;
+		}
+		return ret;
 	case POWER_SUPPLY_PROP_ONLINE:
 		return smb_get_prop_usb_online(chip, &val->intval);
 	case POWER_SUPPLY_PROP_STATUS:
@@ -518,17 +727,15 @@ static int smb_property_is_writable(struct power_supply *psy,
 static irqreturn_t smb_handle_batt_overvoltage(int irq, void *data)
 {
 	struct smb_chip *chip = data;
-	unsigned int status;
 	int rc;
 
-	rc = regmap_read(chip->regmap,
-			 chip->base + BATTERY_CHARGER_STATUS_2, &status);
+	rc = smbx_ov_status(chip);
 	if (rc < 0) {
 		dev_err(chip->dev, "Couldn't read charger status: %d\n", rc);
 		return IRQ_HANDLED;
 	}
 
-	if (status & CHARGER_ERROR_STATUS_BAT_OV_BIT) {
+	if (rc) {
 		/* The hardware stops charging automatically */
 		dev_err(chip->dev, "battery overvoltage detected\n");
 	}
@@ -575,7 +782,7 @@ static irqreturn_t smb_handle_wdog_bark(int irq, void *data)
 }
 
 static const struct power_supply_desc smb_psy_desc = {
-	.name = "pmi8998_charger",
+	.name = "SMB2_charger",
 	.type = POWER_SUPPLY_TYPE_USB,
 	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_SDP) |
 		     BIT(POWER_SUPPLY_USB_TYPE_CDP) |
@@ -589,16 +796,89 @@ static const struct power_supply_desc smb_psy_desc = {
 };
 
 /* Init sequence derived from vendor downstream driver */
-static const struct smb_init_register smb_init_seq[] = {
-	{ .addr = AICL_RERUN_TIME_CFG, .mask = AICL_RERUN_TIME_MASK, .val = 0 },
+static const struct smb_init_register smb5_init_seq[] = {
+	{ .addr = USBIN_CMD_IL, .mask = USBIN_SUSPEND_BIT, .val = 0 },
+	/*
+	 * By default configure us as an upstream facing port
+	 * FIXME: This will be handled by the type-c driver
+	 */
+	{ .addr = SMB5_TYPE_C_MODE_CFG,
+	  .mask = SMB5_EN_TRY_SNK_BIT | SMB5_EN_SNK_ONLY_BIT,
+	  .val = SMB5_EN_TRY_SNK_BIT },
+	{ .addr = SMB5_TYPEC_TYPE_C_VCONN_CONTROL,
+	  .mask = SMB5_VCONN_EN_ORIENTATION_BIT | SMB5_VCONN_EN_SRC_BIT |
+		  SMB5_VCONN_EN_VALUE_BIT,
+	  .val = SMB2_VCONN_EN_SRC_BIT },
+	{ .addr = SMB5_DEBUG_ACCESS_SRC_CFG,
+	  .mask = SMB5_EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT,
+	  .val = SMB5_EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT },
+	{ .addr = SMB5_TYPE_C_EXIT_STATE_CFG,
+	  .mask = SMB5_SEL_SRC_UPPER_REF_BIT,
+	  .val = SMB5_SEL_SRC_UPPER_REF_BIT },
+	/*
+	 * Disable Type-C factory mode and stay in Attached.SRC state when VCONN
+	 * over-current happens
+	 */
+	{ .addr = TYPE_C_CFG,
+	  .mask = APSD_START_ON_CC_BIT,
+	  .val = 0 },
+	{ .addr = SMB5_TYPE_C_DEBUG_ACCESS_SINK,
+	  .mask = SMB5_TYPEC_DEBUG_ACCESS_SINK_MASK,
+	  .val = 0x17 },
+	/* Configure VBUS for software control */
+	{ .addr = OTG_CFG, .mask = OTG_EN_SRC_CFG_BIT, .val = 0 },
+	/*
+	 * Recharge when State Of Charge drops below 98%.
+	 */
+	{ .addr = SMB5_CHARGE_RCHG_SOC_THRESHOLD_CFG_REG,
+	  .mask = SMB5_CHARGE_RCHG_SOC_THRESHOLD_CFG_MASK,
+	  .val = 250 },
+	/* Enable charging */
+	{ .addr = CHARGING_ENABLE_CMD,
+	  .mask = CHARGING_ENABLE_CMD_BIT,
+	  .val = CHARGING_ENABLE_CMD_BIT },
+	/* Enable BC1P2 auto Src detect */
+	{ .addr = USBIN_OPTIONS_1_CFG,
+	  .mask = AUTO_SRC_DETECT_BIT,
+	  .val = AUTO_SRC_DETECT_BIT },
+	/* Set the default SDP charger type to a 500ma USB 2.0 port */
+	{ .addr = USBIN_ICL_OPTIONS,
+	  .mask = USBIN_MODE_CHG_BIT,
+	  .val = USBIN_MODE_CHG_BIT },
+	{ .addr = CMD_ICL_OVERRIDE,
+	  .mask = ICL_OVERRIDE_BIT,
+	  .val = 0 },
+	{ .addr = USBIN_LOAD_CFG,
+	  .mask = ICL_OVERRIDE_AFTER_APSD_BIT,
+	  .val = 0 },
+	/* Disable watchdog */
+	{ .addr = SNARL_BARK_BITE_WD_CFG, .mask = 0xff, .val = 0 },
+	{ .addr = WD_CFG,
+	  .mask = WATCHDOG_TRIGGER_AFP_EN_BIT | WDOG_TIMER_EN_ON_PLUGIN_BIT |
+		  BARK_WDOG_INT_EN_BIT,
+	  .val = 0 },
+	/*
+	 * Enable Automatic Input Current Limit, this will slowly ramp up the current
+	 * When connected to a wall charger, and automatically stop when it detects
+	 * the charger current limit (voltage drop?) or it reaches the programmed limit.
+	 */
+	{ .addr = USBIN_AICL_OPTIONS_CFG,
+	  .mask = USBIN_AICL_PERIODIC_RERUN_EN_BIT | USBIN_AICL_ADC_EN_BIT
+			| USBIN_AICL_EN_BIT | SUSPEND_ON_COLLAPSE_USBIN_BIT,
+	  .val = USBIN_AICL_PERIODIC_RERUN_EN_BIT | USBIN_AICL_ADC_EN_BIT
+			| USBIN_AICL_EN_BIT | SUSPEND_ON_COLLAPSE_USBIN_BIT },
+};
+
+/* Init sequence derived from vendor downstream driver */
+static const struct smb_init_register smb2_init_seq[] = {
 	/*
 	 * By default configure us as an upstream facing port
 	 * FIXME: This will be handled by the type-c driver
 	 */
 	{ .addr = TYPE_C_INTRPT_ENB_SOFTWARE_CTRL,
-	  .mask = TYPEC_POWER_ROLE_CMD_MASK | VCONN_EN_SRC_BIT |
+	  .mask = TYPEC_POWER_ROLE_CMD_MASK | SMB2_VCONN_EN_SRC_BIT |
 		  VCONN_EN_VALUE_BIT,
-	  .val = VCONN_EN_SRC_BIT },
+	  .val = SMB2_VCONN_EN_SRC_BIT },
 	/*
 	 * Disable Type-C factory mode and stay in Attached.SRC state when VCONN
 	 * over-current happens
@@ -612,10 +892,10 @@ static const struct smb_init_register smb_init_seq[] = {
 	 * Use VBAT to determine the recharge threshold when battery is full
 	 * rather than the state of charge.
 	 */
-	{ .addr = FG_UPDATE_CFG_2_SEL,
-	  .mask = SOC_LT_CHG_RECHARGE_THRESH_SEL_BIT |
-		  VBT_LT_CHG_RECHARGE_THRESH_SEL_BIT,
-	  .val = VBT_LT_CHG_RECHARGE_THRESH_SEL_BIT },
+	{ .addr = SMB2_FG_UPDATE_CFG_2_SEL,
+	  .mask = SMB2_SOC_LT_CHG_RECHARGE_THRESH_SEL_BIT |
+		  SMB2_VBT_LT_CHG_RECHARGE_THRESH_SEL_BIT,
+	  .val = SMB2_VBT_LT_CHG_RECHARGE_THRESH_SEL_BIT },
 	{ .addr = USBIN_OPTIONS_1_CFG, .mask = HVDCP_EN_BIT, .val = 0 },
 	/*
 	 * Match downstream defaults
@@ -683,20 +963,58 @@ static const struct smb_init_register smb_init_seq[] = {
 	 */
 	{ .addr = PRE_CHARGE_CURRENT_CFG,
 	  .mask = PRE_CHARGE_CURRENT_SETTING_MASK,
-	  .val = 500000 / CURRENT_SCALE_FACTOR },
+	  /* 20 * step size 25000 uA = 500000 uA */
+	  .val = 20 },
 };
 
-static int smb_init_hw(struct smb_chip *chip)
+static const struct smb_match_data pmi8998_match_data = {
+	.init_seq = smb2_init_seq,
+	.init_seq_len = ARRAY_SIZE(smb2_init_seq),
+	.name = "pmi8998",
+	.gen = SMB2,
+	.current_step_size_ua = 25000,
+	.current_limit_max_ua = 4800000,
+};
+
+static const struct smb_match_data pm660_match_data = {
+	.init_seq = smb2_init_seq,
+	.init_seq_len = ARRAY_SIZE(smb2_init_seq),
+	.name = "pm660",
+	.gen = SMB2,
+	.current_step_size_ua = 25000,
+	.current_limit_max_ua = 4800000,
+};
+
+static const struct smb_match_data pm8150b_match_data = {
+	.init_seq = smb5_init_seq,
+	.init_seq_len = ARRAY_SIZE(smb5_init_seq),
+	.name = "pm8150b",
+	.gen = SMB5,
+	.current_step_size_ua = 50000,
+	.current_limit_max_ua = 5000000,
+};
+
+static const struct smb_match_data pm7250b_match_data = {
+	.init_seq = smb5_init_seq,
+	.init_seq_len = ARRAY_SIZE(smb5_init_seq),
+	.name = "pm7250b",
+	.gen = SMB5,
+	.current_step_size_ua = 50000,
+	.current_limit_max_ua = 5000000,
+};
+
+
+static int smb_init_hw(struct smb_chip *chip, const struct smb_init_register *init_seq, size_t len)
 {
 	int rc, i;
 
-	for (i = 0; i < ARRAY_SIZE(smb_init_seq); i++) {
+	for (i = 0; i < len; i++) {
 		dev_dbg(chip->dev, "%d: Writing 0x%02x to 0x%02x\n", i,
-			smb_init_seq[i].val, smb_init_seq[i].addr);
+			init_seq[i].val, init_seq[i].addr);
 		rc = regmap_update_bits(chip->regmap,
-					chip->base + smb_init_seq[i].addr,
-					smb_init_seq[i].mask,
-					smb_init_seq[i].val);
+					chip->base + init_seq[i].addr,
+					init_seq[i].mask,
+					init_seq[i].val);
 		if (rc < 0)
 			return dev_err_probe(chip->dev, rc,
 					     "%s: init command %d failed\n",
@@ -745,6 +1063,7 @@ static int smb_probe(struct platform_device *pdev)
 	struct power_supply_config supply_config = {};
 	struct power_supply_desc *desc;
 	struct smb_chip *chip;
+	const struct smb_match_data *match_data;
 	unsigned int charge_enable;
 	unsigned int float_voltage_sel;
 	int float_voltage_uv;
@@ -778,6 +1097,15 @@ static int smb_probe(struct platform_device *pdev)
 				     "Couldn't get usbin_i IIO channel\n");
 	}
 
+	match_data = (const struct smb_match_data *)device_get_match_data(chip->dev);
+
+	chip->gen = match_data->gen;
+	chip->current_step_size_ua = match_data->current_step_size_ua;
+	chip->current_limit_max_ua = match_data->current_limit_max_ua;
+
+	dev_info(chip->dev, "Generation %s\n", chip->gen == SMB2 ? "SMB2" : "SMB5");
+
+	/* CHARGING_ENABLE_CMD is at the same offset on SMB2 and SMB5 */
 	rc = regmap_read(chip->regmap, chip->base + CHARGING_ENABLE_CMD,
 			 &charge_enable);
 	if (rc < 0)
@@ -790,7 +1118,7 @@ static int smb_probe(struct platform_device *pdev)
 		return dev_err_probe(chip->dev, rc,
 				     "Couldn't register charging state rollback\n");
 
-	rc = smb_init_hw(chip);
+	rc = smb_init_hw(chip, match_data->init_seq, match_data->init_seq_len);
 	if (rc < 0)
 		return rc;
 
@@ -803,7 +1131,7 @@ static int smb_probe(struct platform_device *pdev)
 	memcpy(desc, &smb_psy_desc, sizeof(smb_psy_desc));
 	desc->name =
 		devm_kasprintf(chip->dev, GFP_KERNEL, "%s-charger",
-			       (const char *)device_get_match_data(chip->dev));
+			       match_data->name);
 	if (!desc->name)
 		return -ENOMEM;
 
@@ -825,6 +1153,15 @@ static int smb_probe(struct platform_device *pdev)
 	if (rc)
 		return dev_err_probe(chip->dev, rc,
 				     "Failed to init status change work\n");
+
+	/*
+	 * FLOAT_VOLTAGE_CFG is encoded differently on SMB5, never program it
+	 * with the SMB2 encoding.
+	 */
+	if (chip->gen != SMB2) {
+		dev_warn(chip->dev, "Unknown float voltage encoding; preserving hardware setting\n");
+		goto skip_float_voltage;
+	}
 
 	if (power_supply_battery_info_has_prop(chip->batt_info,
 					       POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX)) {
@@ -891,7 +1228,7 @@ skip_float_voltage:
 	 * reporting.
 	 */
 	rc = regmap_write(chip->regmap, chip->base + FAST_CHARGE_CURRENT_CFG,
-			  1950000 / CURRENT_SCALE_FACTOR);
+			  1950000 / chip->current_step_size_ua);
 	if (rc < 0)
 		return dev_err_probe(chip->dev, rc,
 				     "Couldn't write fast charge current cfg");
@@ -903,8 +1240,10 @@ skip_float_voltage:
 }
 
 static const struct of_device_id smb_match_id_table[] = {
-	{ .compatible = "qcom,pmi8998-charger", .data = "pmi8998" },
-	{ .compatible = "qcom,pm660-charger", .data = "pm660" },
+	{ .compatible = "qcom,pmi8998-charger", .data = &pmi8998_match_data },
+	{ .compatible = "qcom,pm660-charger", .data = &pm660_match_data },
+	{ .compatible = "qcom,pm7250b-charger", .data = &pm7250b_match_data },
+	{ .compatible = "qcom,pm8150b-charger", .data = &pm8150b_match_data },
 	{ /* sentinal */ }
 };
 MODULE_DEVICE_TABLE(of, smb_match_id_table);
