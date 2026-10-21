@@ -202,10 +202,6 @@ enum smb_generation {
 #define CDP_CURRENT_UA					1500000
 #define DCP_CURRENT_UA					1500000
 #define CURRENT_MAX_UA					DCP_CURRENT_UA
-
-#define SMB2_FLOAT_VOLTAGE_MIN_UV			3487500
-#define SMB2_FLOAT_VOLTAGE_MAX_UV			4920000
-#define SMB2_FLOAT_VOLTAGE_STEP_UV			7500
 /* clang-format on */
 
 enum charger_status {
@@ -271,6 +267,9 @@ struct smb_match_data {
 	const struct smb_init_register *init_seq;
 	unsigned int current_step_size_ua;
 	unsigned int current_limit_max_ua;
+	int fv_min_uv;
+	int fv_max_uv;
+	int fv_step_uv;
 };
 
 static enum power_supply_property smb_properties[] = {
@@ -974,6 +973,9 @@ static const struct smb_match_data pmi8998_match_data = {
 	.gen = SMB2,
 	.current_step_size_ua = 25000,
 	.current_limit_max_ua = 4800000,
+	.fv_min_uv = 3487500,
+	.fv_max_uv = 4920000,
+	.fv_step_uv = 7500,
 };
 
 static const struct smb_match_data pm660_match_data = {
@@ -983,6 +985,9 @@ static const struct smb_match_data pm660_match_data = {
 	.gen = SMB2,
 	.current_step_size_ua = 25000,
 	.current_limit_max_ua = 4800000,
+	.fv_min_uv = 3487500,
+	.fv_max_uv = 4920000,
+	.fv_step_uv = 7500,
 };
 
 static const struct smb_match_data pm8150b_match_data = {
@@ -992,6 +997,9 @@ static const struct smb_match_data pm8150b_match_data = {
 	.gen = SMB5,
 	.current_step_size_ua = 50000,
 	.current_limit_max_ua = 5000000,
+	.fv_min_uv = 3600000,
+	.fv_max_uv = 4790000,
+	.fv_step_uv = 10000,
 };
 
 static const struct smb_match_data pm7250b_match_data = {
@@ -1001,6 +1009,9 @@ static const struct smb_match_data pm7250b_match_data = {
 	.gen = SMB5,
 	.current_step_size_ua = 50000,
 	.current_limit_max_ua = 5000000,
+	.fv_min_uv = 3600000,
+	.fv_max_uv = 4790000,
+	.fv_step_uv = 10000,
 };
 
 
@@ -1154,15 +1165,6 @@ static int smb_probe(struct platform_device *pdev)
 		return dev_err_probe(chip->dev, rc,
 				     "Failed to init status change work\n");
 
-	/*
-	 * FLOAT_VOLTAGE_CFG is encoded differently on SMB5, never program it
-	 * with the SMB2 encoding.
-	 */
-	if (chip->gen != SMB2) {
-		dev_warn(chip->dev, "Unknown float voltage encoding; preserving hardware setting\n");
-		goto skip_float_voltage;
-	}
-
 	if (power_supply_battery_info_has_prop(chip->batt_info,
 					       POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE_MAX)) {
 		float_voltage_uv =
@@ -1175,17 +1177,18 @@ static int smb_probe(struct platform_device *pdev)
 		goto skip_float_voltage;
 	}
 
-	if (float_voltage_uv < SMB2_FLOAT_VOLTAGE_MIN_UV ||
-	    float_voltage_uv > SMB2_FLOAT_VOLTAGE_MAX_UV)
+	/* FLOAT_VOLTAGE_CFG is encoded differently on SMB2 and SMB5 */
+	if (float_voltage_uv < match_data->fv_min_uv ||
+	    float_voltage_uv > match_data->fv_max_uv)
 		return dev_err_probe(chip->dev, -EINVAL,
 				     "float voltage %d uV outside %d-%d uV\n",
 				     float_voltage_uv,
-				     SMB2_FLOAT_VOLTAGE_MIN_UV,
-				     SMB2_FLOAT_VOLTAGE_MAX_UV);
+				     match_data->fv_min_uv,
+				     match_data->fv_max_uv);
 
 	float_voltage_sel =
-		(float_voltage_uv - SMB2_FLOAT_VOLTAGE_MIN_UV) /
-		SMB2_FLOAT_VOLTAGE_STEP_UV;
+		(float_voltage_uv - match_data->fv_min_uv) /
+		match_data->fv_step_uv;
 	rc = regmap_update_bits(chip->regmap, chip->base + FLOAT_VOLTAGE_CFG,
 				FLOAT_VOLTAGE_SETTING_MASK, float_voltage_sel);
 	if (rc < 0)
