@@ -2037,7 +2037,11 @@ static void wcd937x_mbhc_deinit(struct snd_soc_component *component)
 {
 	struct wcd937x_priv *wcd937x = snd_soc_component_get_drvdata(component);
 
+	if (!wcd937x->wcd_mbhc)
+		return;
+
 	wcd_mbhc_deinit(wcd937x->wcd_mbhc);
+	wcd937x->wcd_mbhc = NULL;
 }
 
 /* END MBHC */
@@ -2504,8 +2508,11 @@ static int wcd937x_soc_codec_probe(struct snd_soc_component *component)
 
 	snd_soc_component_init_regmap(component, wcd937x->regmap);
 	ret = pm_runtime_resume_and_get(dev);
-	if (ret < 0)
-		return ret;
+	if (ret < 0) {
+		/* The SoundWire bus is still down while the ADSP restarts */
+		dev_err(dev, "runtime resume failed (%d), deferring\n", ret);
+		return -EPROBE_DEFER;
+	}
 
 	chipid = (snd_soc_component_read(component,
 					 WCD937X_DIGITAL_EFUSE_REG_0) & 0x1e) >> 1;
@@ -2577,11 +2584,16 @@ static int wcd937x_soc_codec_probe(struct snd_soc_component *component)
 
 	ret = wcd937x_mbhc_init(component);
 	if (ret) {
-		dev_err(component->dev, "mbhc initialization failed\n");
-		goto err_free_irqs;
+		/*
+		 * MBHC is only headset detection. Keep the sound card usable
+		 * without it instead of failing the whole codec probe (which
+		 * also makes every rebind after an ADSP restart fail).
+		 */
+		dev_err(component->dev, "mbhc initialization failed (%d), no jack detection\n", ret);
+		wcd937x->wcd_mbhc = NULL;
 	}
 
-	return ret;
+	return 0;
 
 err_free_irqs:
 	free_irq(wcd937x->aux_pdm_wd_int, wcd937x);
@@ -2611,6 +2623,9 @@ static int wcd937x_codec_set_jack(struct snd_soc_component *comp,
 {
 	struct wcd937x_priv *wcd = dev_get_drvdata(comp->dev);
 	int ret = 0;
+
+	if (!wcd->wcd_mbhc)
+		return -ENOTSUPP;
 
 	if (jack)
 		ret = wcd_mbhc_start(wcd->wcd_mbhc, &wcd->mbhc_cfg, jack);
