@@ -647,3 +647,71 @@
 		line-name = "cam-mipi-sel-macro";
 	};
 };
+
+&camss {
+	ports {
+		port@1 {
+			camss_endpoint1: endpoint {
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&cam_front_endpoint>;
+			};
+		};
+	};
+};
+
+/* 16 MP front camera, Sony IMX471 */
+&cci0_i2c1 {
+	camera@10 {
+		compatible = "sony,imx471";
+		reg = <0x10>;
+
+		clocks = <&camcc CAMCC_MCLK0_CLK>;
+		assigned-clocks = <&camcc CAMCC_MCLK0_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 23 GPIO_ACTIVE_LOW>;
+
+		avdd-supply = <&cam_vana_vreg>;
+		dvdd-supply = <&wl_dvdd2>;
+		dovdd-supply = <&cam_vio_vreg>;
+
+		/*
+		 * MCLK0 (gpio13) is shared with the depth camera on cci1_i2c0;
+		 * only one device node may claim the cam_mclk0_default state.
+		 */
+		pinctrl-0 = <&cam_mclk0_default &cam_front_reset_default>;
+		pinctrl-names = "default";
+
+		orientation = <0>;
+		/*
+		 * Android reports roll 270 with the sensor read out H+V flipped
+		 * (init table 0x0101 = 0x03); this driver defaults to no flip,
+		 * so the mounting rotation is 270 - 180 = 90.
+		 */
+		rotation = <90>;
+
+		port {
+			cam_front_endpoint: endpoint {
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <164800000>;
+				remote-endpoint = <&camss_endpoint1>;
+			};
+		};
+	};
+};
+
+&tlmm {
+	cam_mclk0_default: cam-mclk0-default-state {
+		pins = "gpio13";
+		function = "cam_mclk";
+		drive-strength = <4>;
+		bias-disable;
+	};
+
+	cam_front_reset_default: cam-front-reset-default-state {
+		pins = "gpio23";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+};
