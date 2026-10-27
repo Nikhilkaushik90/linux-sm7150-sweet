@@ -6,11 +6,18 @@
  * Copyright (C) 2026 Kate Hsuan <hpa@redhat.com>
  */
 
+#include <linux/bits.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
+#include <linux/limits.h>
+#include <linux/math.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <media/v4l2-cci.h>
 #include <media/v4l2-ctrls.h>
@@ -28,6 +35,9 @@
 /* V_TIMING internal */
 #define IMX471_REG_FLL				CCI_REG16(0x0340)
 #define IMX471_FLL_MAX				0xffff
+
+/* H_TIMING internal */
+#define IMX471_REG_LLP				CCI_REG16(0x0342)
 
 /* Exposure control */
 #define IMX471_REG_EXPOSURE			CCI_REG16(0x0202)
@@ -61,6 +71,14 @@
 
 /* default link frequency and external clock */
 #define IMX471_LINK_FREQ_DEFAULT		200000000LL
+/*
+ * 2x2 binned 2320x1744 mode taken from the Qualcomm CamX sensor module of
+ * the Xiaomi Redmi Note 10 Pro (sweet): EXCK 19.2 MHz, OP pre-div 3,
+ * OP multiplier 103, OPSYCK div 2 -> 329.6 Mbps/lane -> 164.8 MHz DDR.
+ */
+#define IMX471_LINK_FREQ_164M			164800000LL
+#define IMX471_LINK_FREQ_INDEX_DEFAULT		0
+#define IMX471_LINK_FREQ_INDEX_164M		1
 #define IMX471_EXT_CLK				19200000
 
 /* PLL */
@@ -116,9 +134,19 @@
 
 #define to_imx471(_sd) container_of_const(_sd, struct imx471, sd)
 
-static const char * const imx471_supply_name[] = {
+/* ACPI (INT3472) platforms only describe the analogue supply */
+static const char * const imx471_supply_name_acpi[] = {
 	"vana",
 };
+
+/* Devicetree platforms: interface, analogue and digital core supplies */
+static const char * const imx471_supply_name_of[] = {
+	"dovdd",
+	"avdd",
+	"dvdd",
+};
+
+#define IMX471_MAX_SUPPLIES			ARRAY_SIZE(imx471_supply_name_of)
 
 struct imx471_mode {
 	u32 width;
@@ -130,6 +158,14 @@ struct imx471_mode {
 
 	/* H-timing */
 	u32 llp;
+
+	/* Index into link_freq_menu_items[] */
+	u32 link_freq_index;
+	/* Pixel rate reported to userspace (V4L2_CID_PIXEL_RATE) */
+	u64 pixel_rate;
+
+	/* Analogue crop rectangle, in native pixel array coordinates */
+	struct v4l2_rect crop;
 
 	const struct cci_reg_sequence *default_mode_regs;
 	unsigned int default_mode_regs_length;
@@ -145,9 +181,16 @@ struct imx471 {
 	struct v4l2_ctrl *vflip;
 	struct v4l2_ctrl *hflip;
 	struct v4l2_ctrl *exposure;
+	struct v4l2_ctrl *link_freq;
+	struct v4l2_ctrl *pixel_rate;
+
+	/* Modes whose link frequency is allowed by the firmware */
+	unsigned long link_freq_bitmap;
+	const struct imx471_mode *default_mode;
 
 	struct gpio_desc *reset_gpio;
-	struct regulator_bulk_data supplies[ARRAY_SIZE(imx471_supply_name)];
+	struct regulator_bulk_data supplies[IMX471_MAX_SUPPLIES];
+	unsigned int num_supplies;
 	struct clk *img_clk;
 
 	struct device *dev;
@@ -250,6 +293,76 @@ static const struct cci_reg_sequence mode_1928x1088_regs[] = {
 	{ CCI_REG8(0x5f0a), 0xb6 },
 };
 
+/*
+ * 2320x1744 @ 30 fps, 2x2 binned full field of view, RAW10, 4 lanes,
+ * 164.8 MHz link frequency.
+ *
+ * Decoded from the "regSetting" tables of the Qualcomm CamX sensor module
+ * com.qti.sensormodule.sweet_{ofilm,sunny}_imx471_front.bin (Xiaomi Redmi
+ * Note 10 Pro, resolution entry #1). Exposure, gain and frame length are
+ * left to the controls. The trailing registers are the init-table deltas of
+ * that module with respect to imx471_global_regs.
+ *
+ * VT: 19.2 MHz / 3 * 65 = 416 MHz, VTPXCK div 6, 2 pixels/clk -> 138.67 Mpix/s
+ * 138666666 / (2560 * 1804) = 30.03 fps
+ */
+static const struct cci_reg_sequence mode_2320x1744_regs[] = {
+	{ IMX471_REG_CSI_DATA_FORMAT, IMX471_CSI_DATA_FORMAT_RAW10 },
+	{ IMX471_REG_CSI_LANE_MODE, IMX471_CSI_4_LANE_MODE },
+	{ IMX471_REG_LLP, 2560 },
+	{ IMX471_REG_X_ADD_STA, 0 },
+	{ IMX471_REG_Y_ADD_STA, 4 },
+	{ IMX471_REG_X_ADD_END, 4655 },
+	{ IMX471_REG_Y_ADD_END, 3491 },
+	{ IMX471_REG_X_EVEN_INC, 1 },
+	{ IMX471_REG_X_ODD_INC, 1 },
+	{ IMX471_REG_Y_EVEN_INC, 1 },
+	{ IMX471_REG_Y_ODD_INC, 1 },
+	{ IMX471_REG_BINNING_MODE, IMX471_BINNING_ENABLE },
+	{ IMX471_REG_BINNING_TYPE, 0x22 },
+	{ IMX471_REG_BINNING_WEIGHTING, 0x09 },
+	{ CCI_REG8(0x3f4c), 0x81 },
+	{ CCI_REG8(0x3f4d), 0x81 },
+	{ IMX471_REG_DIG_CROP_X_OFFSET, 4 },
+	{ IMX471_REG_DIG_CROP_Y_OFFSET, 0 },
+	{ IMX471_REG_DIG_CROP_WIDTH, 2320 },
+	{ IMX471_REG_DIG_CROP_HEIGHT, 1744 },
+	{ IMX471_REG_X_OUTPUT_SIZE, 2320 },
+	{ IMX471_REG_Y_OUTPUT_SIZE, 1744 },
+	{ IMX471_REG_VTPXCK_DIV, 0x06 },
+	{ IMX471_REG_VTSYCK_DIV, 0x02 },
+	{ IMX471_REG_PREPLLCK_VT_DIV, 0x03 },
+	{ IMX471_REG_PLL_VT_MPY, 0x0041 },
+	{ IMX471_REG_OPSYCK_DIV, 0x02 },
+	{ CCI_REG8(0x030d), 0x03 },
+	{ CCI_REG8(0x030e), 0x00 },
+	{ CCI_REG8(0x030f), 0x67 },
+	{ IMX471_REG_PLL_MULT_DRIV, IMX471_PLL_DUAL },
+	{ CCI_REG8(0x3f78), 0x01 },
+	{ CCI_REG8(0x3f79), 0x31 },
+	{ CCI_REG8(0x3ffe), 0x00 },
+	{ CCI_REG8(0x3fff), 0x8a },
+	{ CCI_REG8(0x5f0a), 0xb6 },
+	{ CCI_REG8(0x3f15), 0x00 },
+	/* init-table deltas of the sweet module vs. imx471_global_regs */
+	{ CCI_REG8(0x3c7e), 0x01 },
+	{ CCI_REG8(0xaa06), 0x3f },
+	{ CCI_REG8(0xaa07), 0x05 },
+	{ CCI_REG8(0xaa08), 0x04 },
+	{ CCI_REG8(0xaa12), 0x3f },
+	{ CCI_REG8(0xaa13), 0x04 },
+	{ CCI_REG8(0xaa14), 0x03 },
+	{ CCI_REG8(0xab55), 0x02 },
+	{ CCI_REG8(0xab57), 0x01 },
+	{ CCI_REG8(0xab59), 0x01 },
+	{ CCI_REG8(0xabb4), 0x00 },
+	{ CCI_REG8(0xabb5), 0x01 },
+	{ CCI_REG8(0xabb6), 0x00 },
+	{ CCI_REG8(0xabb7), 0x01 },
+	{ CCI_REG8(0xabb8), 0x00 },
+	{ CCI_REG8(0xabb9), 0x01 },
+};
+
 static const char * const imx471_test_pattern_menu[] = {
 	"Disabled",
 	"Solid Colour",
@@ -259,7 +372,8 @@ static const char * const imx471_test_pattern_menu[] = {
 };
 
 static const s64 link_freq_menu_items[] = {
-	IMX471_LINK_FREQ_DEFAULT,
+	[IMX471_LINK_FREQ_INDEX_DEFAULT] = IMX471_LINK_FREQ_DEFAULT,
+	[IMX471_LINK_FREQ_INDEX_164M] = IMX471_LINK_FREQ_164M,
 };
 
 /*
@@ -283,17 +397,85 @@ static const struct imx471_mode imx471_modes[] = {
 		.fll_def = 1308,
 		.fll_min = 1308,
 		.llp = 2328,
+		.link_freq_index = IMX471_LINK_FREQ_INDEX_DEFAULT,
+		/* link_freq * 2 * 4 lanes / 10 bits, as reported originally */
+		.pixel_rate = 160000000,
+		/* x 8..4647, y 408..3051, 2x2 binned, then 1928x1088 digital crop */
+		.crop = {
+			.left = IMX471_PIXEL_ARRAY_LEFT + 8 + 2 * 208,
+			.top = IMX471_PIXEL_ARRAY_TOP + 408 + 2 * 108,
+			.width = 2 * 1928,
+			.height = 2 * 1088,
+		},
 		.default_mode_regs = mode_1928x1088_regs,
 		.default_mode_regs_length = ARRAY_SIZE(mode_1928x1088_regs),
 	},
+	{
+		.width = 2320,
+		.height = 1744,
+		.fll_def = 1804,
+		.fll_min = 1804,
+		.llp = 2560,
+		.link_freq_index = IMX471_LINK_FREQ_INDEX_164M,
+		.pixel_rate = 138666666,
+		/* x 0..4655, y 4..3491, 2x2 binned, then 2320x1744 digital crop */
+		.crop = {
+			.left = IMX471_PIXEL_ARRAY_LEFT + 2 * 4,
+			.top = IMX471_PIXEL_ARRAY_TOP + 4,
+			.width = 2 * 2320,
+			.height = 2 * 1744,
+		},
+		.default_mode_regs = mode_2320x1744_regs,
+		.default_mode_regs_length = ARRAY_SIZE(mode_2320x1744_regs),
+	},
 };
+
+static bool imx471_mode_supported(struct imx471 *sensor,
+				  const struct imx471_mode *mode)
+{
+	return sensor->link_freq_bitmap & BIT(mode->link_freq_index);
+}
+
+static const struct imx471_mode *imx471_find_mode(struct imx471 *sensor,
+						  u32 width, u32 height)
+{
+	const struct imx471_mode *best = NULL;
+	u32 best_dist = U32_MAX;
+
+	for (unsigned int i = 0; i < ARRAY_SIZE(imx471_modes); i++) {
+		const struct imx471_mode *mode = &imx471_modes[i];
+		u32 dist;
+
+		if (!imx471_mode_supported(sensor, mode))
+			continue;
+
+		dist = abs((s32)mode->width - (s32)width) +
+		       abs((s32)mode->height - (s32)height);
+		if (dist < best_dist) {
+			best_dist = dist;
+			best = mode;
+		}
+	}
+
+	return best ? best : sensor->default_mode;
+}
 
 static int imx471_get_regulators(struct device *dev, struct imx471 *sensor)
 {
-	for (unsigned int i = 0; i < ARRAY_SIZE(imx471_supply_name); i++)
-		sensor->supplies[i].supply = imx471_supply_name[i];
+	const char * const *names;
 
-	return devm_regulator_bulk_get(dev, ARRAY_SIZE(imx471_supply_name),
+	if (is_of_node(dev_fwnode(dev))) {
+		names = imx471_supply_name_of;
+		sensor->num_supplies = ARRAY_SIZE(imx471_supply_name_of);
+	} else {
+		names = imx471_supply_name_acpi;
+		sensor->num_supplies = ARRAY_SIZE(imx471_supply_name_acpi);
+	}
+
+	for (unsigned int i = 0; i < sensor->num_supplies; i++)
+		sensor->supplies[i].supply = names[i];
+
+	return devm_regulator_bulk_get(dev, sensor->num_supplies,
 				       sensor->supplies);
 }
 
@@ -307,6 +489,17 @@ static int imx471_set_ctrl(struct v4l2_ctrl *ctrl)
 	const struct v4l2_mbus_framefmt *format =
 			v4l2_subdev_state_get_format(state, 0);
 	int ret;
+
+	/*
+	 * Read-only controls updated by the driver on a mode change; nothing
+	 * to program (LLP is part of the mode register table).
+	 */
+	switch (ctrl->id) {
+	case V4L2_CID_LINK_FREQ:
+	case V4L2_CID_PIXEL_RATE:
+	case V4L2_CID_HBLANK:
+		return 0;
+	}
 
 	if (ctrl->id == V4L2_CID_VBLANK) {
 		s64 exposure_max = format->height + ctrl->val -
@@ -394,15 +587,30 @@ static int imx471_enum_frame_size(struct v4l2_subdev *sd,
 				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_frame_size_enum *fse)
 {
-	if (fse->index >= ARRAY_SIZE(imx471_modes))
+	struct imx471 *sensor = to_imx471(sd);
+	unsigned int n = 0;
+
+	if (fse->code != imx471_get_format_code(sensor))
 		return -EINVAL;
 
-	fse->min_width = imx471_modes[fse->index].width;
-	fse->max_width = fse->min_width;
-	fse->min_height = imx471_modes[fse->index].height;
-	fse->max_height = fse->min_height;
+	for (unsigned int i = 0; i < ARRAY_SIZE(imx471_modes); i++) {
+		const struct imx471_mode *mode = &imx471_modes[i];
 
-	return 0;
+		if (!imx471_mode_supported(sensor, mode))
+			continue;
+
+		if (n++ != fse->index)
+			continue;
+
+		fse->min_width = mode->width;
+		fse->max_width = mode->width;
+		fse->min_height = mode->height;
+		fse->max_height = mode->height;
+
+		return 0;
+	}
+
+	return -EINVAL;
 }
 
 static void imx471_update_pad_format(struct imx471 *sensor,
@@ -424,19 +632,28 @@ static int imx471_set_pad_format(struct v4l2_subdev *sd,
 	const struct imx471_mode *mode;
 	int h_blank, ret;
 
-	mode = v4l2_find_nearest_size(imx471_modes, ARRAY_SIZE(imx471_modes),
-				      width, height, fmt->format.width,
-				      fmt->format.height);
+	mode = imx471_find_mode(sensor, fmt->format.width, fmt->format.height);
 
 	imx471_update_pad_format(sensor, mode, fmt);
 
+	if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE &&
+	    media_entity_is_streaming(&sensor->sd.entity))
+		return -EBUSY;
+
 	*v4l2_subdev_state_get_format(sd_state, fmt->pad) = fmt->format;
+	*v4l2_subdev_state_get_crop(sd_state, fmt->pad) = mode->crop;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
 		return 0;
 
-	if (media_entity_is_streaming(&sensor->sd.entity))
-		return -EBUSY;
+	ret = __v4l2_ctrl_s_ctrl(sensor->link_freq, mode->link_freq_index);
+	if (ret)
+		return ret;
+
+	ret = __v4l2_ctrl_modify_range(sensor->pixel_rate, mode->pixel_rate,
+				       mode->pixel_rate, 1, mode->pixel_rate);
+	if (ret)
+		return ret;
 
 	ret = __v4l2_ctrl_modify_range(sensor->vblank,
 				       mode->fll_min - mode->height,
@@ -463,7 +680,7 @@ static int imx471_get_selection(struct v4l2_subdev *sd,
 	switch (sel->target) {
 	case V4L2_SEL_TGT_CROP:
 		sel->r = *v4l2_subdev_state_get_crop(sd_state, sel->pad);
-		break;
+		return 0;
 
 	case V4L2_SEL_TGT_NATIVE_SIZE:
 		sel->r.top = 0;
@@ -487,12 +704,13 @@ static int imx471_get_selection(struct v4l2_subdev *sd,
 static int imx471_init_state(struct v4l2_subdev *sd,
 			     struct v4l2_subdev_state *sd_state)
 {
+	struct imx471 *sensor = to_imx471(sd);
 	struct v4l2_subdev_format fmt = {
 		.which = V4L2_SUBDEV_FORMAT_TRY,
 		.format = {
 			.code = MEDIA_BUS_FMT_SRGGB10_1X10,
-			.width = imx471_modes[0].width,
-			.height = imx471_modes[0].height,
+			.width = sensor->default_mode->width,
+			.height = sensor->default_mode->height,
 		},
 	};
 
@@ -522,11 +740,10 @@ static int imx471_power_off(struct device *dev)
 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct imx471 *sensor = to_imx471(sd);
 
-	clk_disable_unprepare(sensor->img_clk);
 	gpiod_set_value_cansleep(sensor->reset_gpio, 1);
+	clk_disable_unprepare(sensor->img_clk);
 
-	regulator_bulk_disable(ARRAY_SIZE(imx471_supply_name),
-			       sensor->supplies);
+	regulator_bulk_disable(sensor->num_supplies, sensor->supplies);
 
 	return 0;
 }
@@ -537,20 +754,23 @@ static int imx471_power_on(struct device *dev)
 	struct imx471 *sensor = to_imx471(sd);
 	int ret;
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(imx471_supply_name),
-				    sensor->supplies);
+	ret = regulator_bulk_enable(sensor->num_supplies, sensor->supplies);
 	if (ret < 0) {
 		dev_err(dev, "failed to enable regulators: %d\n", ret);
 		return ret;
 	}
 
+	/* let the rails settle while XCLR is still asserted */
+	usleep_range(1000, 2000);
+
 	ret = clk_prepare_enable(sensor->img_clk);
 	if (ret < 0) {
-		regulator_bulk_disable(ARRAY_SIZE(imx471_supply_name),
-				       sensor->supplies);
+		regulator_bulk_disable(sensor->num_supplies, sensor->supplies);
 		dev_err(dev, "failed to enable imaging clock: %d\n", ret);
 		return ret;
 	}
+
+	usleep_range(1000, 2000);
 
 	gpiod_set_value_cansleep(sensor->reset_gpio, 0);
 
@@ -585,8 +805,7 @@ static int imx471_enable_stream(struct v4l2_subdev *sd,
 	}
 
 	fmt = v4l2_subdev_state_get_format(state, 0);
-	mode = v4l2_find_nearest_size(imx471_modes, ARRAY_SIZE(imx471_modes),
-				      width, height, fmt->width, fmt->height);
+	mode = imx471_find_mode(sensor, fmt->width, fmt->height);
 
 	ret = cci_multi_reg_write(sensor->regmap, mode->default_mode_regs,
 				  mode->default_mode_regs_length, NULL);
@@ -667,12 +886,10 @@ static const struct v4l2_subdev_internal_ops imx471_internal_ops = {
 
 static int imx471_init_controls(struct imx471 *sensor)
 {
-	const struct imx471_mode *mode = &imx471_modes[0];
+	const struct imx471_mode *mode = sensor->default_mode;
 	struct v4l2_fwnode_device_properties props;
 	struct v4l2_ctrl_handler *ctrl_hdlr;
-	struct v4l2_ctrl *link_freq;
 	s64 exposure_max, hblank;
-	u64 pixel_rate;
 	int ret;
 
 	ret = v4l2_fwnode_device_parse(sensor->dev, &props);
@@ -686,19 +903,18 @@ static int imx471_init_controls(struct imx471 *sensor)
 
 	v4l2_ctrl_new_fwnode_properties(ctrl_hdlr, &imx471_ctrl_ops, &props);
 
-	link_freq = v4l2_ctrl_new_int_menu(ctrl_hdlr,
-					   &imx471_ctrl_ops,
-					   V4L2_CID_LINK_FREQ,
-					   ARRAY_SIZE(link_freq_menu_items) - 1,
-					   0,
-					   link_freq_menu_items);
+	sensor->link_freq = v4l2_ctrl_new_int_menu(ctrl_hdlr,
+						   &imx471_ctrl_ops,
+						   V4L2_CID_LINK_FREQ,
+						   ARRAY_SIZE(link_freq_menu_items) - 1,
+						   mode->link_freq_index,
+						   link_freq_menu_items);
 
-	/* pixel_rate = link_freq * 2 * nr_of_lanes / bits_per_sample */
-	pixel_rate = div_u64(IMX471_LINK_FREQ_DEFAULT * 2 * 4, 10);
-
-	v4l2_ctrl_new_std(ctrl_hdlr, &imx471_ctrl_ops,
-			  V4L2_CID_PIXEL_RATE, pixel_rate,
-			  pixel_rate, 1, pixel_rate);
+	sensor->pixel_rate = v4l2_ctrl_new_std(ctrl_hdlr, &imx471_ctrl_ops,
+					       V4L2_CID_PIXEL_RATE,
+					       mode->pixel_rate,
+					       mode->pixel_rate, 1,
+					       mode->pixel_rate);
 
 	sensor->vblank = v4l2_ctrl_new_std(ctrl_hdlr,
 					   &imx471_ctrl_ops,
@@ -746,7 +962,7 @@ static int imx471_init_controls(struct imx471 *sensor)
 		goto error;
 	}
 
-	link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	sensor->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 	sensor->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 	sensor->hflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
 	sensor->vflip->flags |= V4L2_CTRL_FLAG_MODIFY_LAYOUT;
@@ -800,6 +1016,22 @@ static int imx471_check_hwcfg(struct imx471 *sensor)
 				       link_freq_menu_items,
 				       ARRAY_SIZE(link_freq_menu_items),
 				       &link_freq_bitmap);
+	if (ret)
+		goto done_endpoint_free;
+
+	sensor->link_freq_bitmap = link_freq_bitmap;
+
+	/* default to the first mode whose link frequency is allowed */
+	for (unsigned int i = 0; i < ARRAY_SIZE(imx471_modes); i++) {
+		if (imx471_mode_supported(sensor, &imx471_modes[i])) {
+			sensor->default_mode = &imx471_modes[i];
+			break;
+		}
+	}
+
+	if (!sensor->default_mode)
+		ret = dev_err_probe(sensor->dev, -EINVAL,
+				    "no mode for the given link frequencies\n");
 
 done_endpoint_free:
 	v4l2_fwnode_endpoint_free(&bus_cfg);
@@ -941,10 +1173,17 @@ static const struct acpi_device_id imx471_acpi_ids[] __maybe_unused = {
 };
 MODULE_DEVICE_TABLE(acpi, imx471_acpi_ids);
 
+static const struct of_device_id imx471_of_match[] = {
+	{ .compatible = "sony,imx471" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, imx471_of_match);
+
 static struct i2c_driver imx471_i2c_driver = {
 	.driver = {
 		.name = "imx471",
 		.acpi_match_table = ACPI_PTR(imx471_acpi_ids),
+		.of_match_table = imx471_of_match,
 		.pm = pm_sleep_ptr(&imx471_pm_ops),
 	},
 	.probe = imx471_probe,
