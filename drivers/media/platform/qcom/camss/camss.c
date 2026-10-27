@@ -2022,11 +2022,10 @@ static const struct camss_subdev_resources csiphy_res_7150[] = {
 			{ .supply = "refgen", .init_load_uA = 0 }
 		},
 		/* see CSIPHY1: downstream also enables CAM_CC_CSIPHY0_CLK */
-		.clock = { "csiphy3", "csiphy3_timer_src", "csiphy3_timer", "cphy_rx_src", "csiphy0" },
+		.clock = { "csiphy0", "csiphy3", "csiphy3_timer" },
 		.clock_rate = { { 0 },
-				{ 300000000 },
-				{ 0 },
-				{ 384000000, 400000000, 400000000 } },
+				{ 300000000, 384000000, 400000000 },
+				{ 300000000 } },
 		.reg = { "csiphy3" },
 		.interrupt = { "csiphy3" },
 		.csiphy = {
