@@ -1090,13 +1090,16 @@ static irqreturn_t csiphy_isr(int irq, void *dev)
 	struct csiphy_device_regs *regs = csiphy->regs;
 	int i;
 
-	printk(KERN_DEBUG "csiphy_isr called\n");
-
 	for (i = 0; i < 11; i++) {
 		int c = i + 22;
 		u8 val = readl_relaxed(csiphy->base +
 			CSIPHY_3PH_CMN_CSI_COMMON_STATUSn(regs->offset,
 							  regs->common_status_offset, i));
+
+		/* DEBUG (sm7150 bring-up): show which PHY status bits fire */
+		if (val)
+			pr_info_ratelimited("CSIPHY%d dbg: irq STATUS%d=0x%02x\n",
+					    csiphy->id, i, val);
 
 		writel_relaxed(val, csiphy->base +
 			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, c));
@@ -1314,6 +1317,29 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 	for (i = 11; i < 22; i++) {
 		writel_relaxed(0, csiphy->base +
 			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, i));
+	}
+
+	/*
+	 * DEBUG (sm7150 bring-up): use the downstream csiphy v1.2 IRQ masks
+	 * (cam_csiphy_1_2_hwreg.h csiphy_irq_reg_1_2) so PHY-level SOT/sync
+	 * errors are reported, then dump the common block.
+	 */
+	if (csiphy->camss->res->version == CAMSS_7150) {
+		static const u8 irq_mask_v1_2[11] = {
+			0xff, 0xff, 0xfb, 0xff, 0x7f, 0xff,
+			0xff, 0xef, 0xff, 0xff, 0xff };
+
+		for (i = 0; i < 11; i++)
+			writel_relaxed(irq_mask_v1_2[i], csiphy->base +
+				       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 11 + i));
+
+		dev_info(csiphy->camss->dev,
+			 "CSIPHY%d dbg: link_freq=%lld timer=%u settle=%u CTRL0=0x%x CTRL5=0x%x CTRL6=0x%x CTRL7=0x%x\n",
+			 csiphy->id, link_freq, csiphy->timer_clk_rate, settle_cnt,
+			 readl_relaxed(csiphy->base + CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0)),
+			 readl_relaxed(csiphy->base + CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 5)),
+			 readl_relaxed(csiphy->base + CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 6)),
+			 readl_relaxed(csiphy->base + CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 7)));
 	}
 }
 

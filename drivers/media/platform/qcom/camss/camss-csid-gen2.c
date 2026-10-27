@@ -190,6 +190,18 @@ static void __csid_configure_rx(struct csid_device *csid,
 		val |= 1 << CSI2_RX_CFG1_VC_MODE;
 	val |= 1 << CSI2_RX_CFG1_MISR_EN;
 	writel_relaxed(val, csid->base + CSID_CSI2_RX_CFG1);
+
+	/*
+	 * DEBUG (sm7150 bring-up): unmask CSI2 RX SOT-captured (bits 7:4) and
+	 * all RX error bits (24:11) so the ISR tells us whether the PHY hands
+	 * any HS data to the CSID at all. Upstream leaves this masked.
+	 */
+	writel_relaxed(0x01fff8f0, csid->base + CSID_CSI2_RX_IRQ_MASK);
+	dev_info(csid->camss->dev,
+		 "CSID%d dbg: RX_CFG0=0x%08x RX_CFG1=0x%08x (phy %u lanes %u assign 0x%x)\n",
+		 csid->id, readl_relaxed(csid->base + CSID_CSI2_RX_CFG0),
+		 readl_relaxed(csid->base + CSID_CSI2_RX_CFG1),
+		 phy->csiphy_id, lane_cnt, phy->lane_assign);
 }
 
 static void __csid_ctrl_rdi(struct csid_device *csid, int enable, u8 rdi)
@@ -320,6 +332,14 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	val = readl_relaxed(csid->base + CSID_RDI_CFG0(port));
 	val |=  enable << RDI_CFG0_ENABLE;
 	writel_relaxed(val, csid->base + CSID_RDI_CFG0(port));
+
+	/*
+	 * DEBUG (sm7150 bring-up): unmask RDI INPUT_SOF(12), INPUT_EOF(9),
+	 * FIFO_OVERFLOW(2), PIX/LINE_COUNT errors(13,14), CCIF_VIOLATION(15).
+	 */
+	writel_relaxed(enable ? 0xf204 : 0, csid->base + CSID_CSI2_RDIN_IRQ_MASK(port));
+	dev_info(csid->camss->dev, "CSID%d dbg: RDI%u CFG0=0x%08x en=%u\n",
+		 csid->id, port, readl_relaxed(csid->base + CSID_RDI_CFG0(port)), enable);
 }
 
 static void csid_configure_stream(struct csid_device *csid, u8 enable)
@@ -356,7 +376,6 @@ static int csid_configure_testgen_pattern(struct csid_device *csid, s32 val)
  */
 static irqreturn_t csid_isr(int irq, void *dev)
 {
-	printk(KERN_INFO "CSID got IRQ\n");
 	struct csid_device *csid = dev;
 	u32 val;
 	u8 reset_done;
@@ -368,12 +387,22 @@ static irqreturn_t csid_isr(int irq, void *dev)
 
 	val = readl_relaxed(csid->base + CSID_CSI2_RX_IRQ_STATUS);
 	writel_relaxed(val, csid->base + CSID_CSI2_RX_IRQ_CLEAR);
+	if (val)
+		pr_info_ratelimited("CSID%d dbg: RX_IRQ_STATUS=0x%08x total_pkts=%u ecc=0x%x crc=%u\n",
+				    csid->id, val,
+				    readl_relaxed(csid->base + 0x160),
+				    readl_relaxed(csid->base + 0x164),
+				    readl_relaxed(csid->base + 0x168));
 
 	/* Read and clear IRQ status for each enabled RDI channel */
 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++)
 		if (csid->phy.en_vc & BIT(i)) {
 			val = readl_relaxed(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(i));
 			writel_relaxed(val, csid->base + CSID_CSI2_RDIN_IRQ_CLEAR(i));
+			if (val)
+				pr_info_ratelimited("CSID%d dbg: RDI%d_IRQ_STATUS=0x%08x fmt_measure0=0x%08x\n",
+						    csid->id, i, val,
+						    readl_relaxed(csid->base + 0x378 + 0x100 * i));
 		}
 
 	val = 1 << IRQ_CMD_CLEAR;
