@@ -10,6 +10,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/moduleparam.h>
 #include <linux/of.h>
 
 #include "camss-csid.h"
@@ -171,6 +172,11 @@
 #define		TPG_COLOR_BOX_CFG_MODE		0
 #define		TPG_COLOR_BOX_PATTERN_SEL	2
 
+/* 0 = use DT data-lanes; otherwise raw DL0..DL3 INPUT_SEL nibbles, e.g. 0x3210 */
+static unsigned int csid_lane_assign;
+module_param(csid_lane_assign, uint, 0644);
+MODULE_PARM_DESC(csid_lane_assign, "override CSI2_RX_CFG0 DLn_INPUT_SEL (0 = from DT)");
+
 static void __csid_configure_rx(struct csid_device *csid,
 				struct csid_phy_config *phy, int vc)
 {
@@ -181,7 +187,10 @@ static void __csid_configure_rx(struct csid_device *csid,
 		lane_cnt = 4;
 
 	val = (lane_cnt - 1) << CSI2_RX_CFG0_NUM_ACTIVE_LANES;
-	val |= phy->lane_assign << CSI2_RX_CFG0_DL0_INPUT_SEL;
+	if (csid_lane_assign)
+		val |= (csid_lane_assign & 0xffff) << CSI2_RX_CFG0_DL0_INPUT_SEL;
+	else
+		val |= phy->lane_assign << CSI2_RX_CFG0_DL0_INPUT_SEL;
 	val |= phy->csiphy_id << CSI2_RX_CFG0_PHY_NUM_SEL;
 	writel_relaxed(val, csid->base + CSID_CSI2_RX_CFG0);
 
@@ -342,10 +351,70 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 		 csid->id, port, readl_relaxed(csid->base + CSID_RDI_CFG0(port)), enable);
 }
 
+/*
+ * DEBUG (sm7150 bring-up): dump raw (unmasked) CSID RX/RDI state.
+ * Tells "no data reaches CSID" (pkts=0, MISR static) apart from
+ * "data arrives but no IRQ is delivered" (pkts>0 / RX status != 0).
+ * Also triggerable at runtime: echo <csid id> > .../parameters/csid_dump
+ */
+static void csid_dbg_dump(struct csid_device *csid, const char *why)
+{
+	dev_info(csid->camss->dev,
+		 "CSID%d dump(%s): TOP_ST=0x%08x RX_ST=0x%08x RX_MASK=0x%08x RX_CFG0=0x%08x RX_CFG1=0x%08x pkts=%u ecc=0x%08x crc=%u misr=%08x/%08x/%08x/%08x\n",
+		 csid->id, why,
+		 readl_relaxed(csid->base + CSID_TOP_IRQ_STATUS),
+		 readl_relaxed(csid->base + CSID_CSI2_RX_IRQ_STATUS),
+		 readl_relaxed(csid->base + CSID_CSI2_RX_IRQ_MASK),
+		 readl_relaxed(csid->base + CSID_CSI2_RX_CFG0),
+		 readl_relaxed(csid->base + CSID_CSI2_RX_CFG1),
+		 readl_relaxed(csid->base + 0x160), readl_relaxed(csid->base + 0x164),
+		 readl_relaxed(csid->base + 0x168),
+		 readl_relaxed(csid->base + 0x150), readl_relaxed(csid->base + 0x154),
+		 readl_relaxed(csid->base + 0x158), readl_relaxed(csid->base + 0x15c));
+	dev_info(csid->camss->dev,
+		 "CSID%d dump(%s): RDI0 ST=0x%08x MASK=0x%08x CFG0=0x%08x CTRL=0x%08x STATUS=0x%08x fmt_meas0=0x%08x short_pkt0=0x%08x long_pkt0=0x%08x\n",
+		 csid->id, why,
+		 readl_relaxed(csid->base + CSID_CSI2_RDIN_IRQ_STATUS(0)),
+		 readl_relaxed(csid->base + CSID_CSI2_RDIN_IRQ_MASK(0)),
+		 readl_relaxed(csid->base + CSID_RDI_CFG0(0)),
+		 readl_relaxed(csid->base + CSID_RDI_CTRL(0)),
+		 readl_relaxed(csid->base + 0x350),
+		 readl_relaxed(csid->base + 0x378),
+		 readl_relaxed(csid->base + 0x128),
+		 readl_relaxed(csid->base + 0x130));
+}
+
+static struct csid_device *csid_dbg_last[4];
+
+static int csid_dump_set(const char *val, const struct kernel_param *kp)
+{
+	unsigned int id;
+	int ret = kstrtouint(val, 0, &id);
+
+	if (ret)
+		return ret;
+	if (id >= ARRAY_SIZE(csid_dbg_last) || !csid_dbg_last[id])
+		return -ENODEV;
+	/* only valid while the CSID is powered (i.e. during streaming) */
+	csid_dbg_dump(csid_dbg_last[id], "poke");
+	return 0;
+}
+
+static const struct kernel_param_ops csid_dump_ops = {
+	.set = csid_dump_set,
+};
+module_param_cb(csid_dump, &csid_dump_ops, NULL, 0200);
+MODULE_PARM_DESC(csid_dump, "write CSID id to dump its RX/RDI regs (only while streaming)");
+
 static void csid_configure_stream(struct csid_device *csid, u8 enable)
 {
 	struct csid_testgen_config *tg = &csid->testgen;
 	u8 i;
+
+	if (csid->id < ARRAY_SIZE(csid_dbg_last))
+		csid_dbg_last[csid->id] = enable ? csid : NULL;
+	if (!enable)
+		csid_dbg_dump(csid, "stream-off");
 
 	/* Loop through all enabled ports and configure a stream for each */
 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++)
