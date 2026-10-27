@@ -540,3 +540,110 @@
 		bias-disable;
 	};
 };
+
+/ {
+	/*
+	 * AVDD 2.8 V for the macro (OV5675) and depth cameras: pm6150l gpio11,
+	 * vin BOB (downstream camera_d_vdda_regulator, "cam_vana")
+	 */
+	cam_vana_vreg: regulator-cam-vana {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_vana";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		regulator-enable-ramp-delay = <100>;
+		gpio = <&pm6150l_gpios 11 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&vreg_bob>;
+		pinctrl-0 = <&cam_vana_en_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&camss {
+	ports {
+		port@3 {
+			camss_endpoint3: endpoint {
+				data-lanes = <0 1>;
+				bus-type = <4>; /* MEDIA_BUS_TYPE_CSI2_DPHY */
+				remote-endpoint = <&cam_macro_endpoint>;
+			};
+		};
+	};
+};
+
+/* 5 MP macro camera, shares CSIPHY3 with the depth camera via a MIPI switch */
+&cci0_i2c1 {
+	camera@36 {
+		compatible = "ovti,ov5675";
+		reg = <0x36>;
+
+		clocks = <&camcc CAMCC_MCLK3_CLK>;
+		assigned-clocks = <&camcc CAMCC_MCLK3_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
+
+		avdd-supply = <&cam_vana_vreg>;
+		dvdd-supply = <&wl_dvdd1>;
+		dovdd-supply = <&cam_vio_vreg>;
+
+		pinctrl-0 = <&cam_mclk3_default &cam_macro_reset_default
+			     &cam_mipi_sel_default>;
+		pinctrl-names = "default";
+
+		orientation = <1>;
+		rotation = <90>;
+
+		port {
+			cam_macro_endpoint: endpoint {
+				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <450000000>;
+				remote-endpoint = <&camss_endpoint3>;
+			};
+		};
+	};
+};
+
+&pm6150l_gpios {
+	cam_vana_en_default: cam-vana-en-state {
+		pins = "gpio11";
+		function = PMIC_GPIO_FUNC_NORMAL;
+		power-source = <0>;
+	};
+};
+
+&tlmm {
+	cam_mclk3_default: cam-mclk3-default-state {
+		pins = "gpio16";
+		function = "cam_mclk";
+		drive-strength = <4>;
+		bias-disable;
+	};
+
+	cam_macro_reset_default: cam-macro-reset-default-state {
+		pins = "gpio24";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_mipi_sel_default: cam-mipi-sel-default-state {
+		pins = "gpio88";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	/*
+	 * MIPI switch select for CSIPHY3 (downstream gpio-custom1 = tlmm 88,
+	 * CamX power-up sequence drives it HIGH for the macro, LOW for depth).
+	 * No mainline driver for the depth sensor, so pin it to the macro.
+	 */
+	cam-mipi-sel-hog {
+		gpio-hog;
+		gpios = <88 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "cam-mipi-sel-macro";
+	};
+};
