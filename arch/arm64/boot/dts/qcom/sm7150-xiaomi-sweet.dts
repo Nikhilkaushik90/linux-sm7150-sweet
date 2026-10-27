@@ -677,9 +677,9 @@
 
 		/*
 		 * MCLK0 (gpio13) is shared with the depth camera on cci1_i2c0;
-		 * only one device node may claim the cam_mclk0_default state.
+		 * cam_mclk0_default is applied as a tlmm hog (see &tlmm below).
 		 */
-		pinctrl-0 = <&cam_mclk0_default &cam_front_reset_default>;
+		pinctrl-0 = <&cam_front_reset_default>;
 		pinctrl-names = "default";
 
 		orientation = <0>;
@@ -710,6 +710,101 @@
 
 	cam_front_reset_default: cam-front-reset-default-state {
 		pins = "gpio23";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+};
+
+/ {
+	/*
+	 * DOVDD 1.8 V for the depth camera: pm6150l gpio8 (downstream
+	 * camera_vddio_depth_regulator). Chained to cam_vio (pm6150l gpio4,
+	 * downstream cam_v_custom1 of the depth node: I/O rail of the
+	 * depth/macro MIPI switch), so that rail is on whenever depth is.
+	 */
+	cam_vio_depth_vreg: regulator-cam-vio-depth {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_vio_depth";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-enable-ramp-delay = <100>;
+		gpio = <&pm6150l_gpios 8 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&cam_vio_vreg>;
+		pinctrl-0 = <&cam_vio_depth_en_default>;
+		pinctrl-names = "default";
+	};
+};
+
+/*
+ * 2 MP depth camera, dual-sourced: GalaxyCore GC02M1 (Sunny module, 0x37)
+ * or OmniVision OV02B1B (Ofilm module, 0x3c). Both share reset tlmm 21 and
+ * MCLK0 (tlmm 13, also the front camera's MCLK). Probe-only: no port yet,
+ * the driver of the fitted sensor logs "... detected (chip id ...)" and
+ * then fails with "no endpoint (probe-only mode)"; the other one fails
+ * with "chip id mismatch" / i2c error or -EBUSY on the shared reset GPIO.
+ */
+&cci1_i2c0 {
+	depth_gc02m1: camera@37 {
+		compatible = "galaxycore,gc02m1";
+		reg = <0x37>;
+
+		clocks = <&camcc CAMCC_MCLK0_CLK>;
+		assigned-clocks = <&camcc CAMCC_MCLK0_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 21 GPIO_ACTIVE_LOW>;
+
+		dovdd-supply = <&cam_vio_depth_vreg>;
+		avdd-supply = <&cam_vana_vreg>;
+
+		pinctrl-0 = <&cam_depth_reset_default>;
+		pinctrl-names = "default";
+
+		orientation = <1>;
+		rotation = <90>;
+	};
+
+	depth_ov02b1b: camera@3c {
+		compatible = "ovti,ov02b1b";
+		reg = <0x3c>;
+
+		clocks = <&camcc CAMCC_MCLK0_CLK>;
+		assigned-clocks = <&camcc CAMCC_MCLK0_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 21 GPIO_ACTIVE_LOW>;
+
+		dovdd-supply = <&cam_vio_depth_vreg>;
+		avdd-supply = <&cam_vana_vreg>;
+
+		orientation = <1>;
+		rotation = <90>;
+	};
+};
+
+&pm6150l_gpios {
+	cam_vio_depth_en_default: cam-vio-depth-en-state {
+		pins = "gpio8";
+		function = PMIC_GPIO_FUNC_NORMAL;
+		power-source = <0>;
+	};
+};
+
+&tlmm {
+	/*
+	 * MCLK0 (gpio13, cam_mclk0_default) feeds both the front camera
+	 * (cci0_i2c1) and the depth camera (cci1_i2c0). A pin can only be muxed
+	 * by one device, so mux it here as a tlmm pinctrl hog instead of in a
+	 * sensor node; both sensors reference <&camcc CAMCC_MCLK0_CLK>, which
+	 * is refcounted.
+	 */
+	pinctrl-0 = <&cam_mclk0_default>;
+	pinctrl-names = "default";
+
+	cam_depth_reset_default: cam-depth-reset-default-state {
+		pins = "gpio21";
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
