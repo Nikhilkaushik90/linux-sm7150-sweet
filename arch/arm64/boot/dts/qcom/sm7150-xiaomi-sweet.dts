@@ -810,3 +810,100 @@
 		bias-disable;
 	};
 };
+
+/*
+ * L16A: on sweet it only feeds the wide camera VCM (downstream cam_vaf,
+ * 2.8 V, pm6150 L16 range 2.424-2.976 V). The common dtsi pins it at 1.8 V.
+ */
+&vreg_l16a_2p8 {
+	regulator-min-microvolt = <2800000>;
+	regulator-max-microvolt = <2800000>;
+};
+
+&camss {
+	ports {
+		port@0 {
+			camss_endpoint0: endpoint {
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&cam_wide_endpoint>;
+			};
+		};
+	};
+};
+
+/*
+ * 64 MP wide camera, Samsung S5KGW3 (Redmi Note 10 Pro India, M2101K6P).
+ * The Pro Max (M2101K6I) and the global Pro (M2101K6G) carry a 108 MP
+ * S5KHM2 at the same address (chip id 0x1ad2), which needs MIPI C-PHY.
+ */
+&cci0_i2c0 {
+	camera@10 {
+		compatible = "samsung,s5kgw3";
+		reg = <0x10>;
+
+		clocks = <&camcc CAMCC_MCLK2_CLK>;
+		assigned-clocks = <&camcc CAMCC_MCLK2_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 26 GPIO_ACTIVE_LOW>;
+
+		vddio-supply = <&cam_vio_vreg>;
+		/* downstream cam_vdig = L6A (1.05 V requested, L6A min is 1.096 V) */
+		vddd-supply = <&vreg_l6a_1p2>;
+		vdda-supply = <&wl_avdd1>;
+
+		pinctrl-0 = <&cam_mclk2_default &cam_wide_reset_default>;
+		pinctrl-names = "default";
+
+		lens-focus = <&wide_vcm>;
+
+		orientation = <1>;
+		rotation = <90>;
+
+		port {
+			cam_wide_endpoint: endpoint {
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <835200000>;
+				remote-endpoint = <&camss_endpoint0>;
+			};
+		};
+	};
+
+	/*
+	 * Dongwoon DW9800V VCM (vendor actuatorName "dw9800v"); the vendor init
+	 * (0x02 = 0x02 ringing, 0x06 = 0x80 SAC mode 2, 0x07 = 0x6a, 10-bit
+	 * DAC at 0x03/0x04) matches the DW9800K support of the dw9719 driver.
+	 * 0x0c is the usual DW98xx address, not confirmed from the blobs.
+	 */
+	wide_vcm: lens@c {
+		compatible = "dongwoon,dw9800k";
+		reg = <0x0c>;
+		vdd-supply = <&vreg_l16a_2p8>;
+		dongwoon,sac-mode = <2>;
+		dongwoon,vcm-prescale = <0x6a>;
+	};
+
+	/* module OTP EEPROM (vendor EEPROM slave 0xa2), read-only */
+	eeprom@51 {
+		compatible = "atmel,24c64";
+		reg = <0x51>;
+		vcc-supply = <&cam_vio_vreg>;
+		read-only;
+	};
+};
+
+&tlmm {
+	cam_mclk2_default: cam-mclk2-default-state {
+		pins = "gpio15";
+		function = "cam_mclk";
+		drive-strength = <4>;
+		bias-disable;
+	};
+
+	cam_wide_reset_default: cam-wide-reset-default-state {
+		pins = "gpio26";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+};
