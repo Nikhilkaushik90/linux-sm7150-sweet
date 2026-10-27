@@ -833,6 +833,16 @@ config VIDEO_S5K6A3
 	  This is a V4L2 sensor driver for Samsung S5K6A3 raw
 	  camera sensor.
 
+config VIDEO_S5KGW3
+	tristate "Samsung S5KGW3 sensor support"
+	select V4L2_CCI_I2C
+	help
+	  This is a V4L2 sensor driver for the Samsung ISOCELL GW3 (S5KGW3)
+	  64 MP raw camera sensor, 2x2 binned 16 MP modes only.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called s5kgw3.
+
 config VIDEO_S5KJN1
 	tristate "Samsung S5KJN1 sensor support"
 	select V4L2_CCI_I2C
