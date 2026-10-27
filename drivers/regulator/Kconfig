@@ -1851,6 +1851,14 @@ config REGULATOR_VQMMC_IPQ4019
 	  This driver provides support for the VQMMC LDO I/0
 	  voltage regulator of the IPQ4019 SD/EMMC controller.
 
+config REGULATOR_WL2866D
+	tristate "OmniVision WL2866D camera LDO regulator"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  This driver supports the WL2866D four-channel camera LDO
+	  (two DVDD and two AVDD outputs) used on Xiaomi Redmi Note 10 Pro.
+
 config REGULATOR_WM831X
 	tristate "Wolfson Microelectronics WM831x PMIC regulators"
 	depends on MFD_WM831X
