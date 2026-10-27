@@ -432,6 +432,16 @@ config VIDEO_OV02E10
 	  To compile this driver as a module, choose M here: the
 	  module will be called ov02e10.
 
+config VIDEO_OV02B10
+	tristate "OmniVision OV02B10/OV02B1B sensor support"
+	select V4L2_CCI_I2C
+	help
+	  This is a Video4Linux2 sensor driver for the OmniVision OV02B10
+	  and OV02B1B 2 MP cameras (Xiaomi sweet depth camera, Ofilm module).
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ov02b10.
+
 config VIDEO_OV02C10
 	tristate "OmniVision OV02C10 sensor support"
 	select V4L2_CCI_I2C
