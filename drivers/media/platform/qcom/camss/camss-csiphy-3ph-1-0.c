@@ -15,6 +15,21 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/moduleparam.h>
+
+/*
+ * DEBUG (sm7150 bring-up) knobs, read at every stream-on, no rebuild needed:
+ *  csiphy_settle_cnt: 0 = computed from link-frequency, else raw count
+ *  csiphy_irq_mode:   0 = all PHY irqs masked (upstream), 1 = lane error
+ *                     bits only, 2 = downstream v1.2 mask (incl. RXSYNC storm)
+ */
+static unsigned int csiphy_settle_cnt;
+module_param(csiphy_settle_cnt, uint, 0644);
+MODULE_PARM_DESC(csiphy_settle_cnt, "override CSIPHY settle count (0 = auto)");
+
+static unsigned int csiphy_irq_mode = 1;
+module_param(csiphy_irq_mode, uint, 0644);
+MODULE_PARM_DESC(csiphy_irq_mode, "sm7150 CSIPHY irq mask: 0 none, 1 errors, 2 downstream");
 
 #define CSIPHY_3PH_LNn_CFG1(n)			(0x000 + 0x100 * (n))
 #define CSIPHY_3PH_LNn_CFG1_SWI_REC_DLY_PRG	(BIT(7) | BIT(6))
@@ -1288,6 +1303,8 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 	int i;
 
 	settle_cnt = csiphy_settle_cnt_calc(link_freq, csiphy->timer_clk_rate);
+	if (csiphy_settle_cnt)
+		settle_cnt = csiphy_settle_cnt & 0xff;
 
 	val = CSIPHY_3PH_CMN_CSI_COMMON_CTRL5_CLK_ENABLE;
 	for (i = 0; i < c->num_data; i++)
@@ -1343,9 +1360,25 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 		static const u8 irq_mask_v1_2[11] = {
 			0xff, 0xff, 0xfb, 0xff, 0x7f, 0xff,
 			0xff, 0xef, 0xff, 0xff, 0xff };
+		/*
+		 * D-PHY data-lane error bits only (FIFO_OFLOW, CMD_ERR, CTL_ERR,
+		 * ERR_SOT, ERR_SOT_SYNC) of LN0/LN2/LN4/LN6. The per-HS-burst
+		 * "valid SOT received" (RXSYNC) bits - STATUS1[0], STATUS3[5],
+		 * STATUS6[2], STATUS8[7] - are left masked: they fire on every
+		 * line and cause an interrupt storm.
+		 */
+		static const u8 irq_mask_err[11] = {
+			0x1f, 0x00, 0xe0, 0x03, 0x00, 0x7c,
+			0x00, 0x80, 0x0f, 0x00, 0x00 };
+		const u8 *m = NULL;
 
-		for (i = 0; i < 11; i++)
-			writel_relaxed(irq_mask_v1_2[i], csiphy->base +
+		if (csiphy_irq_mode == 1)
+			m = irq_mask_err;
+		else if (csiphy_irq_mode == 2)
+			m = irq_mask_v1_2;
+
+		for (i = 0; m && i < 11; i++)
+			writel_relaxed(m[i], csiphy->base +
 				       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 11 + i));
 
 		dev_info(csiphy->camss->dev,
