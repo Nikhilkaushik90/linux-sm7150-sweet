@@ -1300,11 +1300,26 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 	writel_relaxed(val, csiphy->base +
 		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 6));
 
-	val = 0x02;
+	/*
+	 * CSIPHY v1.2 (sm7150/sdmmagpie): downstream csiphy_common_reg_1_2
+	 * writes CTRL7=0x52 and pulses CTRL0=0x03 for 1 ms before selecting
+	 * 2PH mode (CTRL0=0x02, done again by the lane table).
+	 */
+	if (csiphy->camss->res->version == CAMSS_7150)
+		val = 0x52;
+	else
+		val = 0x02;
 	writel_relaxed(val, csiphy->base +
 		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 7));
 
-	val = 0x00;
+	if (csiphy->camss->res->version == CAMSS_7150) {
+		writel_relaxed(0x03, csiphy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
+		usleep_range(1000, 1100);
+		val = 0x02;
+	} else {
+		val = 0x00;
+	}
 	writel_relaxed(val, csiphy->base +
 		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
 
