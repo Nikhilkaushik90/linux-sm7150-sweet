@@ -593,7 +593,7 @@
 		pinctrl-names = "default";
 
 		orientation = <1>;
-		rotation = <90>;
+		rotation = <270>;
 
 		port {
 			cam_macro_endpoint: endpoint {
@@ -686,9 +686,9 @@
 		/*
 		 * Android reports roll 270 with the sensor read out H+V flipped
 		 * (init table 0x0101 = 0x03); this driver defaults to no flip,
-		 * so the mounting rotation is 270 - 180 = 90.
+		 * so the mounting rotation is 270 - 180 = 90. (Snapshot showed it upside down, so 270 is used.)
 		 */
-		rotation = <90>;
+		rotation = <270>;
 
 		port {
 			cam_front_endpoint: endpoint {
