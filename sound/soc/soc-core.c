@@ -388,6 +388,14 @@ static struct snd_soc_pcm_runtime *soc_new_pcm_runtime(
 		return NULL;
 	}
 
+	/*
+	 * devm_kzalloc_flex() sets the __counted_by() counter to the allocated
+	 * capacity when the compiler supports it, but components are appended
+	 * one by one by snd_soc_rtd_add_component(), which expects to start
+	 * from zero.
+	 */
+	rtd->num_components = 0;
+
 	rtd->dev = dev;
 	INIT_LIST_HEAD(&rtd->list);
 	for_each_pcm_streams(stream) {
