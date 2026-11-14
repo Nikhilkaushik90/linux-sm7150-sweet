@@ -18,6 +18,8 @@
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
 #include <linux/module.h>
+#include <linux/pm_wakeup.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/unaligned.h>
 
@@ -179,6 +181,55 @@ static void goodix_gtx8_touch_handler(struct goodix_gtx8_core *cd, u8 touch_num,
 	goodix_gtx8_report_state(cd, touch_num, touch_data);
 }
 
+static int goodix_gtx8_enter_gesture_mode(struct goodix_gtx8_core *cd)
+{
+	u8 mode = (u8)~(0xf8 | GOODIX_GTX8_GESTURE_DOUBLE_TAP_EN);
+	u8 cmd[5] = { GOODIX_GTX8_CMD_GESTURE, mode, 0, 0,
+		      GOODIX_GTX8_CMD_GESTURE + mode };
+
+	return regmap_raw_write(cd->regmap, cd->ic_data->cmd_addr, cmd,
+				sizeof(cmd));
+}
+
+static void goodix_gtx8_gesture_handler(struct goodix_gtx8_core *cd)
+{
+	u8 *buf = cd->event_buffer;
+	int error;
+
+	error = regmap_raw_read(cd->regmap, cd->ic_data->touch_data_addr, buf,
+				GOODIX_GTX8_HEADER_SIZE_YELLOWSTONE);
+	if (error) {
+		dev_warn_ratelimited(cd->dev,
+				     "failed to read gesture data: %d\n", error);
+		return;
+	}
+
+	if (!(buf[0] & GOODIX_GTX8_GESTURE_EVENT) ||
+	    !goodix_gtx8_checksum_valid_yellowstone(buf,
+				GOODIX_GTX8_HEADER_SIZE_YELLOWSTONE)) {
+		dev_dbg(cd->dev, "invalid gesture event: %*ph\n",
+			(int)GOODIX_GTX8_HEADER_SIZE_YELLOWSTONE, buf);
+		regmap_write(cd->regmap, cd->ic_data->touch_data_addr, 0);
+		/* The vendor driver re-arms gesture mode after a bad event */
+		goodix_gtx8_enter_gesture_mode(cd);
+		return;
+	}
+
+	if (buf[GOODIX_GTX8_GESTURE_TYPE_OFFSET_YS] ==
+	    GOODIX_GTX8_GESTURE_DOUBLE_TAP) {
+		pm_wakeup_event(cd->dev, 0);
+		input_report_key(cd->input_dev, KEY_WAKEUP, 1);
+		input_sync(cd->input_dev);
+		input_report_key(cd->input_dev, KEY_WAKEUP, 0);
+		input_sync(cd->input_dev);
+	} else {
+		dev_dbg(cd->dev, "unhandled gesture 0x%02x\n",
+			buf[GOODIX_GTX8_GESTURE_TYPE_OFFSET_YS]);
+	}
+
+	regmap_write(cd->regmap, cd->ic_data->touch_data_addr, 0);
+}
+
 static irqreturn_t goodix_gtx8_irq(int irq, void *data)
 {
 	struct goodix_gtx8_core *cd = data;
@@ -187,6 +238,11 @@ static irqreturn_t goodix_gtx8_irq(int irq, void *data)
 	union goodix_gtx8_touch *touch_data;
 	int error;
 	u8 status, touch_num;
+
+	if (cd->gesture_mode) {
+		goodix_gtx8_gesture_handler(cd);
+		return IRQ_HANDLED;
+	}
 
 	error = regmap_raw_read(
 		cd->regmap, cd->ic_data->touch_data_addr, cd->event_buffer,
@@ -275,6 +331,9 @@ static int goodix_gtx8_input_dev_config(struct goodix_gtx8_core *cd)
 	input_set_abs_params(cd->input_dev, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);
 
 	touchscreen_parse_properties(cd->input_dev, true, &cd->props);
+
+	if (cd->ic_data->cmd_addr && device_can_wakeup(cd->dev))
+		input_set_capability(cd->input_dev, EV_KEY, KEY_WAKEUP);
 
 	error = input_mt_init_slots(cd->input_dev, GOODIX_GTX8_MAX_TOUCH,
 				    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
@@ -403,6 +462,10 @@ static void goodix_gtx8_stop(struct goodix_gtx8_core *cd)
 		return;
 
 	disable_irq(cd->irq);
+	if (cd->gesture_mode) {
+		disable_irq_wake(cd->irq);
+		cd->gesture_mode = false;
+	}
 	goodix_gtx8_power_off(cd);
 	cd->powered = false;
 }
@@ -458,6 +521,10 @@ static int goodix_gtx8_panel_enabled(struct drm_panel_follower *follower)
 	struct goodix_gtx8_core *cd =
 		container_of(follower, struct goodix_gtx8_core, panel_follower);
 
+	/* Leaving gesture mode needs a reset; power cycle the controller */
+	if (cd->gesture_mode)
+		goodix_gtx8_stop(cd);
+
 	return goodix_gtx8_start(cd);
 }
 
@@ -465,6 +532,30 @@ static int goodix_gtx8_panel_disabling(struct drm_panel_follower *follower)
 {
 	struct goodix_gtx8_core *cd =
 		container_of(follower, struct goodix_gtx8_core, panel_follower);
+	int error;
+
+	if (cd->gesture_mode)
+		return 0;
+
+	/*
+	 * With wakeup enabled keep the controller powered in gesture mode,
+	 * so a double tap on the dark screen reports KEY_WAKEUP.
+	 */
+	if (cd->powered && cd->ic_data->cmd_addr &&
+	    device_may_wakeup(cd->dev)) {
+		disable_irq(cd->irq);
+		error = goodix_gtx8_enter_gesture_mode(cd);
+		if (!error) {
+			regmap_write(cd->regmap, cd->ic_data->touch_data_addr,
+				     0);
+			cd->gesture_mode = true;
+			enable_irq_wake(cd->irq);
+			enable_irq(cd->irq);
+			return 0;
+		}
+		enable_irq(cd->irq);
+		dev_warn(cd->dev, "failed to enter gesture mode: %d\n", error);
+	}
 
 	goodix_gtx8_stop(cd);
 
@@ -548,6 +639,10 @@ static int goodix_gtx8_probe(struct i2c_client *client)
 		return error;
 	}
 
+	if (cd->ic_data->cmd_addr &&
+	    device_property_read_bool(cd->dev, "wakeup-source"))
+		device_init_wakeup(cd->dev, true);
+
 	error = goodix_gtx8_input_dev_config(cd);
 	if (error) {
 		dev_err(cd->dev, "failed to set input device");
@@ -607,6 +702,7 @@ static const struct goodix_gtx8_ic_data gt9896_data = {
 	.ic_type = IC_TYPE_YELLOWSTONE,
 	.product_id = { '9', '8', '9', '6' },
 	.touch_data_addr = GOODIX_GTX8_TOUCH_DATA_ADDR_YELLOWSTONE,
+	.cmd_addr = GOODIX_GTX8_CMD_ADDR_YELLOWSTONE,
 };
 
 static const struct i2c_device_id goodix_gtx8_i2c_id[] = {

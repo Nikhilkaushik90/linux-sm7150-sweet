@@ -9,6 +9,7 @@
 
 #define GOODIX_GTX8_TOUCH_EVENT			BIT(7)
 #define GOODIX_GTX8_REQUEST_EVENT		BIT(6)
+#define GOODIX_GTX8_GESTURE_EVENT		BIT(5)
 #define GOODIX_GTX8_TOUCH_COUNT_MASK		GENMASK(3, 0)
 #define GOODIX_GTX8_FINGER_ID_MASK_YELLOWSTONE	GENMASK(7, 4)
 
@@ -19,6 +20,17 @@
 #define GOODIX_GTX8_FW_VERSION_ADDR_YELLOWSTONE	0x4022
 #define GOODIX_GTX8_TOUCH_DATA_ADDR_NORMANDY	0x4100
 #define GOODIX_GTX8_TOUCH_DATA_ADDR_YELLOWSTONE	0x4180
+#define GOODIX_GTX8_CMD_ADDR_YELLOWSTONE	0x4160
+
+/*
+ * Gesture (wake) mode, from the vendor driver: command 0x08 with a mask of
+ * gestures to *disable* in the low bits; bit 1 is double tap. On Yellowstone
+ * the gesture report uses the touch data area, gesture type in byte 4.
+ */
+#define GOODIX_GTX8_CMD_GESTURE			0x08
+#define GOODIX_GTX8_GESTURE_DOUBLE_TAP_EN	BIT(1)
+#define GOODIX_GTX8_GESTURE_TYPE_OFFSET_YS	4
+#define GOODIX_GTX8_GESTURE_DOUBLE_TAP		0xcc
 
 #define I2C_MAX_TRANSFER_SIZE			256
 
@@ -41,6 +53,8 @@ struct goodix_gtx8_ic_data {
 	enum goodix_gtx8_ic_type ic_type;
 	char product_id[4];
 	int touch_data_addr;
+	/* 0 if gesture (wake) mode is not supported */
+	int cmd_addr;
 };
 
 struct goodix_gtx8_header_normandy {
@@ -127,6 +141,8 @@ struct goodix_gtx8_core {
 	struct drm_panel_follower panel_follower;
 	bool is_panel_follower;
 	bool powered;
+	/* Controller is in gesture mode while the panel is off */
+	bool gesture_mode;
 	struct regmap *regmap;
 	struct regulator *avdd;
 	struct regulator *vddio;
