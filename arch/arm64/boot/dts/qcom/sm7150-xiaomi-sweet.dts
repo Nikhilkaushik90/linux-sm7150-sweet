@@ -894,7 +894,7 @@
 		pinctrl-0 = <&cam_mclk2_default &cam_wide_reset_default>;
 		pinctrl-names = "default";
 
-		/* lens-focus = <&wide_vcm>; enable once the VCM is confirmed to probe (it would block camss otherwise) */
+		lens-focus = <&wide_vcm>;
 
 		orientation = <1>;
 		rotation = <90>;
