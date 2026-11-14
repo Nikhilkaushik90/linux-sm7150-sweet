@@ -431,3 +431,4 @@ module_platform_driver(qcom_qg_driver);
 MODULE_AUTHOR("Danila Tikhonov <danila@jiaxyga.com>");
 MODULE_DESCRIPTION("Qualcomm PMIC QGauge (QG) driver");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS("IIO_CONSUMER");
