@@ -2069,9 +2069,18 @@ static const struct v4l2_ctrl_ops s5kgw3_ctrl_ops = {
 	.s_ctrl = s5kgw3_set_ctrl,
 };
 
+/*
+ * Timing (VT) pixel rate: frame time = HTS * VTS / rate. Not the CSI-2
+ * output rate (link freq * 2 * lanes / 10 = 668.16 MHz): the vendor modes
+ * give llp * fll * fps = 7360 * 3602 * 30.042 = 7376 * 3598 * 30.010
+ * = 796.43 MHz. Using the output rate made exposure and frame times ~19 %
+ * too long in userspace.
+ */
+#define S5KGW3_VT_PIXEL_RATE		796430000ULL
+
 static inline u64 s5kgw3_freq_to_pixel_rate(const u64 freq)
 {
-	return div_u64(freq * 2 * S5KGW3_DATA_LANES, 10);
+	return S5KGW3_VT_PIXEL_RATE;
 }
 
 static int s5kgw3_init_controls(struct s5kgw3 *s5kgw3)
