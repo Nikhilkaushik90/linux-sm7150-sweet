@@ -335,6 +335,7 @@
 #define AW8695_RAMDATA				0x42
 
 #define AW8695_GLB_STATE			0x46
+#define AW8624_GLB_STATE			0x47
 
 #define AW8695_BST_AUTO				0x47
 #define AW8695_BST_AUTO_BST_AUTOSW_MASK		GENMASK(2, 2)
@@ -517,6 +518,12 @@ struct aw8695_data {
 	u8 r_spare;
 	u32 bemf_vthh;
 	u32 bemf_vthl;
+	/*
+	 * AW8624: no boost converter, and the registers from 0x31 up are laid
+	 * out differently (e.g. GLB_STATE is 0x47, 0x47 is BST_AUTO on AW8695).
+	 */
+	bool is_aw8624;
+	unsigned int glb_state_reg;
 };
 
 /*
@@ -671,7 +678,7 @@ static int aw8695_haptics_stop(struct aw8695_data *haptics)
 	if (err)
 		return err;
 
-	err = regmap_read_poll_timeout(haptics->regmap, AW8695_GLB_STATE, read_buf,
+	err = regmap_read_poll_timeout(haptics->regmap, haptics->glb_state_reg, read_buf,
 			(read_buf & 0x0f) == 0, 2000, 2000 * 100);
 	if (err) {
 		dev_err(dev, "Did not enter standby: %d\n", err);
@@ -906,7 +913,7 @@ static int aw8695_haptic_get_f0(struct aw8695_data *haptics)
 		(haptics->f0_det_trace + haptics->f0_det_wait) * (haptics->f0_det_repeat - 1));
 	usleep_range(f0_trace_ms * 1000, f0_trace_ms * 1000 + 500);
 
-	err = regmap_read_poll_timeout(haptics->regmap, AW8695_GLB_STATE, read_buf,
+	err = regmap_read_poll_timeout(haptics->regmap, haptics->glb_state_reg, read_buf,
 			(read_buf & 0x0f) == 0, 10000, 10000 * 50);
 	if (err) {
 		dev_err(dev, "Did not enter standby: %d\n", err);
@@ -1015,6 +1022,10 @@ static int aw8695_init(struct aw8695_data *haptics)
 		return -ENODEV;
 	}
 
+	haptics->is_aw8624 = read_buf == AW8624_CHIPID;
+	haptics->glb_state_reg = haptics->is_aw8624 ? AW8624_GLB_STATE :
+						      AW8695_GLB_STATE;
+
 	err = regmap_write(haptics->regmap, AW8695_ID, AW8695_RESET);
 	if (err) {
 		dev_err(dev, "Failed to reset: %d\n", err);
@@ -1071,15 +1082,17 @@ static int aw8695_init(struct aw8695_data *haptics)
 	if (err)
 		return err;
 
-	err = regmap_write(haptics->regmap, AW8695_BSTDBG1, haptics->boost_debug[0]);
-	if (err)
-		return err;
-	err = regmap_write(haptics->regmap, AW8695_BSTDBG2, haptics->boost_debug[1]);
-	if (err)
-		return err;
-	err = regmap_write(haptics->regmap, AW8695_BSTDBG3, haptics->boost_debug[2]);
-	if (err)
-		return err;
+	if (!haptics->is_aw8624) {
+		err = regmap_write(haptics->regmap, AW8695_BSTDBG1, haptics->boost_debug[0]);
+		if (err)
+			return err;
+		err = regmap_write(haptics->regmap, AW8695_BSTDBG2, haptics->boost_debug[1]);
+		if (err)
+			return err;
+		err = regmap_write(haptics->regmap, AW8695_BSTDBG3, haptics->boost_debug[2]);
+		if (err)
+			return err;
+	}
 	err = regmap_write(haptics->regmap, AW8695_TSET, haptics->tset);
 	if (err)
 		return err;
@@ -1087,16 +1100,18 @@ static int aw8695_init(struct aw8695_data *haptics)
 	if (err)
 		return err;
 
-	err = regmap_update_bits(haptics->regmap, AW8695_ANADBG,
-		AW8695_ANADBG_IOC_MASK, AW8695_ANADBG_IOC_4P65A);
-	if (err)
-		return err;
+	if (!haptics->is_aw8624) {
+		err = regmap_update_bits(haptics->regmap, AW8695_ANADBG,
+			AW8695_ANADBG_IOC_MASK, AW8695_ANADBG_IOC_4P65A);
+		if (err)
+			return err;
 
-	/* Set boost peak current */
-	err = regmap_update_bits(haptics->regmap, AW8695_BSTCFG,
-		AW8695_BSTCFG_PEAKCUR_MASK, AW8695_BSTCFG_PEAKCUR_2A);
-	if (err)
-		return err;
+		/* Set boost peak current */
+		err = regmap_update_bits(haptics->regmap, AW8695_BSTCFG,
+			AW8695_BSTCFG_PEAKCUR_MASK, AW8695_BSTCFG_PEAKCUR_2A);
+		if (err)
+			return err;
+	}
 
 	/* Adjust motorprotect config */
 	err = regmap_update_bits(haptics->regmap, AW8695_DETCTRL,
@@ -1111,6 +1126,14 @@ static int aw8695_init(struct aw8695_data *haptics)
 		AW8695_PRLVL_PR_ENABLE, 0);
 	if (err)
 		return err;
+
+	/*
+	 * The boost, offset and f0 calibration below use AW8695 registers
+	 * that the AW8624 does not have at these addresses. RAM playback
+	 * works without them, so leave the AW8624 at its reset defaults.
+	 */
+	if (haptics->is_aw8624)
+		goto bemf;
 
 	/* Adjust auto boost config */
 	err = regmap_update_bits(haptics->regmap, AW8695_BST_AUTO,
@@ -1133,6 +1156,7 @@ static int aw8695_init(struct aw8695_data *haptics)
 	if (err)
 		return err;
 
+bemf:
 	/* beme config */
 	err = regmap_write(haptics->regmap, AW8695_BEMF_VTHH_H,
 			FIELD_GET(AW8695_HIGH_MASK, haptics->bemf_vthh));
