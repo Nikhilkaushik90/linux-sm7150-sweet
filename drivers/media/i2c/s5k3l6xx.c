@@ -900,6 +900,7 @@ static unsigned s5k3l6xx_calculate_pixel_rate(unsigned mipi_clock, u8 bits_per_p
 }
 
 static int s5k3l6xx_set_fmt(struct v4l2_subdev *sd,
+			    const struct v4l2_subdev_client_info *ci,
 			    struct v4l2_subdev_state *sd_state,
 			    struct v4l2_subdev_format *fmt)
 {
@@ -981,6 +982,7 @@ static struct v4l2_rect get_crop(const struct s5k3l6xx_frame *fmt)
 }
 
 static int s5k3l6xx_get_selection(struct v4l2_subdev *sd,
+			       const struct v4l2_subdev_client_info *ci,
 			       struct v4l2_subdev_state *sd_state,
 			       struct v4l2_subdev_selection *sel)
 {
