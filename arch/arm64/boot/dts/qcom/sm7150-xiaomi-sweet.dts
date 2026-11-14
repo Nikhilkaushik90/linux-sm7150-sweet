@@ -894,7 +894,7 @@
 		pinctrl-0 = <&cam_mclk2_default &cam_wide_reset_default>;
 		pinctrl-names = "default";
 
-		/* lens-focus = <&wide_vcm>;  disabled: the VCM probe fails (address unconfirmed) and would block all of camss */
+		/* lens-focus = <&wide_vcm>; enable once the VCM is confirmed to probe (it would block camss otherwise) */
 
 		orientation = <1>;
 		rotation = <90>;
@@ -912,12 +912,14 @@
 	 * Dongwoon DW9800V VCM (vendor actuatorName "dw9800v"); the vendor init
 	 * (0x02 = 0x02 ringing, 0x06 = 0x80 SAC mode 2, 0x07 = 0x6a, 10-bit
 	 * DAC at 0x03/0x04) matches the DW9800K support of the dw9719 driver.
-	 * 0x0c is the usual DW98xx address, not confirmed from the blobs.
+	 * Vendor actuator data: slave 0x18 (8-bit) = 0x0c, powered from VAF.
+	 * The I2C pull-ups sit on the camera I/O rail, so hold cam_vio too.
 	 */
 	wide_vcm: lens@c {
 		compatible = "dongwoon,dw9800k";
 		reg = <0x0c>;
 		vdd-supply = <&vreg_l16a_2p8>;
+		vio-supply = <&cam_vio_vreg>;
 		dongwoon,sac-mode = <2>;
 		dongwoon,vcm-prescale = <0x6a>;
 	};

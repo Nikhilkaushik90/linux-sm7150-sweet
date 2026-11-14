@@ -86,6 +86,8 @@ struct dw9719_device {
 	struct device *dev;
 	struct regmap *regmap;
 	struct regulator *regulator;
+	/* optional I/O rail (I2C pull-ups), e.g. camera DOVDD */
+	struct regulator *vio;
 	enum dw9719_model model;
 	u32 mode_low_bits;
 	u32 sac_mode;
@@ -100,6 +102,7 @@ struct dw9719_device {
 static int dw9719_power_down(struct dw9719_device *dw9719)
 {
 	u32 reg_pwr = dw9719->model == DW9718S ? DW9718S_PD : DW9719_CONTROL;
+	int ret;
 
 	/*
 	 * Worth engaging the internal SHUTDOWN mode especially due to the
@@ -107,7 +110,10 @@ static int dw9719_power_down(struct dw9719_device *dw9719)
 	 */
 	if (cci_write(dw9719->regmap, reg_pwr, DW9719_SHUTDOWN, NULL))
 		dev_err(dw9719->dev, "Error writing to power register\n");
-	return regulator_disable(dw9719->regulator);
+	ret = regulator_disable(dw9719->regulator);
+	if (dw9719->vio)
+		regulator_disable(dw9719->vio);
+	return ret;
 }
 
 static int dw9719_power_up(struct dw9719_device *dw9719, bool detect)
@@ -117,9 +123,18 @@ static int dw9719_power_up(struct dw9719_device *dw9719, bool detect)
 	int ret;
 	int err;
 
+	if (dw9719->vio) {
+		ret = regulator_enable(dw9719->vio);
+		if (ret)
+			return ret;
+	}
+
 	ret = regulator_enable(dw9719->regulator);
-	if (ret)
+	if (ret) {
+		if (dw9719->vio)
+			regulator_disable(dw9719->vio);
 		return ret;
+	}
 
 	/*
 	 * Need 100us to transition from SHUTDOWN to STANDBY.
@@ -130,7 +145,8 @@ static int dw9719_power_up(struct dw9719_device *dw9719, bool detect)
 	 */
 	cci_write(dw9719->regmap, reg_pwr, DW9719_STANDBY, NULL);
 	/* the jiggle is expected to fail, don't even log that as error */
-	fsleep(200);
+	/* the DW9800 vendor sequence waits 1 ms after leaving power down */
+	fsleep(dw9719->model == DW9800K ? 1000 : 200);
 	cci_write(dw9719->regmap, reg_pwr, DW9719_STANDBY, &ret);
 
 	if (detect) {
@@ -371,6 +387,14 @@ static int dw9719_probe(struct i2c_client *client)
 	if (IS_ERR(dw9719->regulator))
 		return dev_err_probe(&client->dev, PTR_ERR(dw9719->regulator),
 				     "getting regulator\n");
+
+	dw9719->vio = devm_regulator_get_optional(&client->dev, "vio");
+	if (IS_ERR(dw9719->vio)) {
+		if (PTR_ERR(dw9719->vio) != -ENODEV)
+			return dev_err_probe(&client->dev, PTR_ERR(dw9719->vio),
+					     "getting vio regulator\n");
+		dw9719->vio = NULL;
+	}
 
 	v4l2_i2c_subdev_init(&dw9719->sd, client, &dw9719_ops);
 	dw9719->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
