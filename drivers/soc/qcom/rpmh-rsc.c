@@ -449,8 +449,17 @@ static irqreturn_t tcs_tx_done(int irq, void *p)
 
 	for_each_set_bit(i, &irq_status, BITS_PER_TYPE(u32)) {
 		req = get_req_from_tcs(drv, i);
-		if (WARN_ON(!req))
-			goto skip;
+		if (!req) {
+			/*
+			 * Completion for a TCS we did not trigger (e.g. left
+			 * pending by the bootloader). Only acknowledge it: the
+			 * TCS may just have been claimed for a new request, and
+			 * reclaiming it here would make that request time out.
+			 */
+			dev_dbg(drv->dev, "spurious TX done on TCS %d\n", i);
+			writel_relaxed(BIT(i), drv->tcs_base + drv->regs[RSC_DRV_IRQ_CLEAR]);
+			continue;
+		}
 
 		trace_rpmh_tx_done(drv, i, req);
 
@@ -463,7 +472,6 @@ static irqreturn_t tcs_tx_done(int irq, void *p)
 		 * disable interrupt for this TCS
 		 */
 		__tcs_set_trigger(drv, i, false);
-skip:
 		/* Reclaim the TCS */
 		write_tcs_reg(drv, drv->regs[RSC_DRV_CMD_ENABLE], i, 0);
 		writel_relaxed(BIT(i), drv->tcs_base + drv->regs[RSC_DRV_IRQ_CLEAR]);
@@ -1107,6 +1115,10 @@ static int rpmh_rsc_probe(struct platform_device *pdev)
 	irq = platform_get_irq(pdev, drv->id);
 	if (irq < 0)
 		return irq;
+
+	/* Drop TX done status the bootloader may have left pending. */
+	writel_relaxed(GENMASK(drv->num_tcs - 1, 0),
+		       drv->tcs_base + drv->regs[RSC_DRV_IRQ_CLEAR]);
 
 	ret = devm_request_irq(&pdev->dev, irq, tcs_tx_done,
 			       IRQF_TRIGGER_HIGH | IRQF_NO_SUSPEND,
