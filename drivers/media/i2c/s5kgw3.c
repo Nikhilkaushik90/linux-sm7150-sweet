@@ -2238,6 +2238,7 @@ static void s5kgw3_update_pad_format(struct s5kgw3 *s5kgw3,
 }
 
 static int s5kgw3_set_pad_format(struct v4l2_subdev *sd,
+				 const struct v4l2_subdev_client_info *ci,
 				 struct v4l2_subdev_state *state,
 				 struct v4l2_subdev_format *fmt)
 {
@@ -2318,6 +2319,7 @@ static int s5kgw3_enum_frame_size(struct v4l2_subdev *sd,
 }
 
 static int s5kgw3_get_selection(struct v4l2_subdev *sd,
+				const struct v4l2_subdev_client_info *ci,
 				struct v4l2_subdev_state *sd_state,
 				struct v4l2_subdev_selection *sel)
 {
@@ -2355,7 +2357,7 @@ static int s5kgw3_init_state(struct v4l2_subdev *sd,
 		},
 	};
 
-	s5kgw3_set_pad_format(sd, state, &fmt);
+	s5kgw3_set_pad_format(sd, NULL, state, &fmt);
 
 	return 0;
 }
