@@ -2774,21 +2774,6 @@ static const struct s5kgw3_mode s5kgw3_supported_modes[] = {
 		},
 	},
 	{
-		/* vendor: llp 11248, fll 7072, 10.02 fps */
-		.width = 9280,
-		.height = 6944,
-		.hts = 11248,
-		.vts = 7072,
-		.exposure = 2560,
-		.exposure_margin = 16,
-		.link_freq_index = S5KGW3_LINK_FREQ_883MHZ_INDEX,
-		.pixel_rate = S5KGW3_VT_PIXEL_RATE,
-		.reg_list = {
-			.regs = s5kgw3_9280x6944_mode,
-			.num_regs = ARRAY_SIZE(s5kgw3_9280x6944_mode),
-		},
-	},
-	{
 		/* vendor: llp 5348, fll 2496, 60.09 fps; VT PLL multiplier 141 vs 140 */
 		.width = 4224,
 		.height = 2376,
@@ -2803,7 +2788,83 @@ static const struct s5kgw3_mode s5kgw3_supported_modes[] = {
 			.num_regs = ARRAY_SIZE(s5kgw3_4224x2376_mode),
 		},
 	},
+	{
+		/* vendor: llp 11248, fll 7072, 10.02 fps */
+		.width = 9280,
+		.height = 6944,
+		.hts = 11248,
+		.vts = 7072,
+		.exposure = 2560,
+		.exposure_margin = 16,
+		.link_freq_index = S5KGW3_LINK_FREQ_883MHZ_INDEX,
+		.pixel_rate = S5KGW3_VT_PIXEL_RATE,
+		.reg_list = {
+			.regs = s5kgw3_9280x6944_mode,
+			.num_regs = ARRAY_SIZE(s5kgw3_9280x6944_mode),
+		},
+	},
 };
+
+/*
+ * Which modes are offered. libcamera's simple pipeline picks the smallest
+ * sensor mode that fits the request and ignores the aspect ratio, so with
+ * the 16:9 modes present even 4:3 photos come from a cropped 16:9 readout.
+ * By default only the full field of view 4640x3472 mode is offered (16:9 is
+ * cropped from it, same horizontal view as the 4640x2612 mode).
+ *
+ * video_modes: also offer 4640x2612 @30 and 4224x2376 @60 (cropped).
+ * full_res: also offer 9280x6944; this outputs the raw Quad-Bayer
+ *	(Tetracell) pattern, which needs a remosaic step (closed vendor code on
+ *	Android) - a normal demosaic gives maze artifacts.
+ */
+static bool video_modes;
+module_param(video_modes, bool, 0444);
+MODULE_PARM_DESC(video_modes, "Offer the 16:9 modes, incl. 4224x2376 at 60 fps (narrower 4:3 view)");
+
+static bool full_res;
+module_param(full_res, bool, 0444);
+MODULE_PARM_DESC(full_res, "Offer the 9280x6944 Quad-Bayer full-resolution mode (needs remosaic)");
+
+static bool s5kgw3_mode_offered(const struct s5kgw3_mode *mode)
+{
+	if (mode->width == 9280)
+		return full_res;
+	if (mode->height * 4 != mode->width * 3)	/* not 4:3 */
+		return video_modes;
+	return true;
+}
+
+static const struct s5kgw3_mode *s5kgw3_nth_mode(unsigned int n)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(s5kgw3_supported_modes); i++)
+		if (s5kgw3_mode_offered(&s5kgw3_supported_modes[i]) && n-- == 0)
+			return &s5kgw3_supported_modes[i];
+	return NULL;
+}
+
+/* Same metric as v4l2_find_nearest_size(), over the offered modes only */
+static const struct s5kgw3_mode *s5kgw3_find_mode(u32 width, u32 height)
+{
+	const struct s5kgw3_mode *best = &s5kgw3_supported_modes[0];
+	u32 best_err = U32_MAX;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(s5kgw3_supported_modes); i++) {
+		const struct s5kgw3_mode *m = &s5kgw3_supported_modes[i];
+		u32 err;
+
+		if (!s5kgw3_mode_offered(m))
+			continue;
+		err = abs((int)m->width - (int)width) + abs((int)m->height - (int)height);
+		if (err < best_err) {
+			best_err = err;
+			best = m;
+		}
+	}
+	return best;
+}
 
 static int s5kgw3_set_ctrl(struct v4l2_ctrl *ctrl)
 {
@@ -3040,10 +3101,7 @@ static int s5kgw3_set_pad_format(struct v4l2_subdev *sd,
 	s64 hblank, vblank, exposure_max;
 	const struct s5kgw3_mode *mode;
 
-	mode = v4l2_find_nearest_size(s5kgw3_supported_modes,
-				      ARRAY_SIZE(s5kgw3_supported_modes),
-				      width, height,
-				      fmt->format.width, fmt->format.height);
+	mode = s5kgw3_find_mode(fmt->format.width, fmt->format.height);
 
 	s5kgw3_update_pad_format(s5kgw3, mode, &fmt->format);
 
@@ -3101,16 +3159,17 @@ static int s5kgw3_enum_frame_size(struct v4l2_subdev *sd,
 				  struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct s5kgw3 *s5kgw3 = to_s5kgw3(sd);
+	const struct s5kgw3_mode *mode = s5kgw3_nth_mode(fse->index);
 
-	if (fse->index >= ARRAY_SIZE(s5kgw3_supported_modes))
+	if (!mode)
 		return -EINVAL;
 
 	if (fse->code != s5kgw3_get_format_code(s5kgw3))
 		return -EINVAL;
 
-	fse->min_width = s5kgw3_supported_modes[fse->index].width;
+	fse->min_width = mode->width;
 	fse->max_width = fse->min_width;
-	fse->min_height = s5kgw3_supported_modes[fse->index].height;
+	fse->min_height = mode->height;
 	fse->max_height = fse->min_height;
 
 	return 0;
