@@ -902,7 +902,8 @@
 		port {
 			cam_wide_endpoint: endpoint {
 				data-lanes = <1 2 3 4>;
-				link-frequencies = /bits/ 64 <835200000>;
+				/* 4640x3472/4640x2612 @30, 9280x6944 @10, 4224x2376 @60 */
+				link-frequencies = /bits/ 64 <835200000 883200000 1068800000>;
 				remote-endpoint = <&camss_endpoint0>;
 			};
 		};
