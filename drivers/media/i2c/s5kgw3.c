@@ -2829,9 +2829,10 @@ static bool s5kgw3_mode_offered(const struct s5kgw3_mode *mode)
 {
 	if (mode->width == 9280)
 		return full_res;
-	if (mode->height * 4 != mode->width * 3)	/* not 4:3 */
-		return video_modes;
-	return true;
+	/* the full field of view mode (4640x3472, ~4:3) is always offered */
+	if (mode->width == 4640 && mode->height == 3472)
+		return true;
+	return video_modes;
 }
 
 static const struct s5kgw3_mode *s5kgw3_nth_mode(unsigned int n)
