@@ -471,7 +471,7 @@ static void csiphy_try_format(struct csiphy_device *csiphy,
 		if (i >= csiphy->res->formats->nformats)
 			fmt->code = MEDIA_BUS_FMT_UYVY8_1X16;
 
-		fmt->width = clamp_t(u32, fmt->width, 1, 8191);
+		fmt->width = clamp_t(u32, fmt->width, 1, 16383);
 		fmt->height = clamp_t(u32, fmt->height, 1, 8191);
 
 		fmt->field = V4L2_FIELD_NONE;
